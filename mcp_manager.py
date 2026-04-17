@@ -43,6 +43,12 @@ class MCPManager:
                 self._sessions[name] = session
                 result = await session.list_tools()
                 for tool in result.tools:
+                    if tool.name in self._tools:
+                        existing_server = self._tools[tool.name][0]
+                        logger.warning(
+                            "Tool '%s' from server '%s' overrides existing registration from server '%s'",
+                            tool.name, name, existing_server,
+                        )
                     self._tools[tool.name] = (name, tool)
                 logger.info("MCP server '%s' connected with %d tool(s)", name, len(result.tools))
             except Exception as exc:
@@ -118,7 +124,10 @@ class MCPManager:
             c.text if hasattr(c, "text") else str(c)
             for c in result.content
         ]
-        return "\n".join(parts)
+        text = "\n".join(parts)
+        if result.isError:
+            return f"Error: tool '{name}' returned an error: {text}"
+        return text
 
     def list_tools_summary(self) -> str:
         """
