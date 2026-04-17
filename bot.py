@@ -30,6 +30,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"👋 Hello! I'm your Ollama-powered assistant.\n"
         f"Current model: `{agent.active_model}`\n\n"
         f"Commands:\n"
+        f"  /models — list available models\n"
         f"  /model <name> — switch model\n"
         f"  /clear — clear conversation history\n"
         f"  /tools — list available MCP tools",
@@ -55,7 +56,24 @@ async def cmd_model(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(f"✅ Switched to model `{new_model}`", parse_mode="Markdown")
 
 
-async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def cmd_models(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Handle /models command.
+
+    List all locally available Ollama models by querying the Ollama API.
+    """
+    agent: Agent = context.bot_data["agent"]
+    models = await agent.list_models()
+    if not models:
+        await update.message.reply_text("⚠️ No models found (is Ollama running?)")
+        return
+    lines = "\n".join(
+        f"{'▶️' if m == agent.active_model else '  •'} `{m}`" for m in models
+    )
+    await update.message.reply_text(f"*Available models:*\n{lines}", parse_mode="Markdown")
+
+
+
     """
     Handle /clear command.
     
@@ -143,6 +161,7 @@ def main() -> None:
     app.bot_data["mcp"] = mcp
 
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("models", cmd_models))
     app.add_handler(CommandHandler("model", cmd_model))
     app.add_handler(CommandHandler("clear", cmd_clear))
     app.add_handler(CommandHandler("tools", cmd_tools))

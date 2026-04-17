@@ -149,6 +149,36 @@ def test_set_model_changes_active_model(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_list_models_returns_sorted_names(tmp_path):
+    cfg = _make_config(tmp_path)
+    mcp = MagicMock()
+    agent = Agent(cfg, mcp)
+
+    m1, m2 = MagicMock(), MagicMock()
+    m1.model = "llava"
+    m2.model = "llama3.2"
+    list_response = MagicMock()
+    list_response.models = [m1, m2]
+
+    with patch.object(agent._client, "list", return_value=list_response):
+        result = await agent.list_models()
+
+    assert result == ["llama3.2", "llava"]
+
+
+@pytest.mark.asyncio
+async def test_list_models_returns_empty_on_error(tmp_path):
+    cfg = _make_config(tmp_path)
+    mcp = MagicMock()
+    agent = Agent(cfg, mcp)
+
+    with patch.object(agent._client, "list", side_effect=Exception("connection refused")):
+        result = await agent.list_models()
+
+    assert result == []
+
+
+@pytest.mark.asyncio
 async def test_image_passed_to_ollama(tmp_path):
     """Images are forwarded to ollama chat as base64 strings."""
     cfg = _make_config(tmp_path)

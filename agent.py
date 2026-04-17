@@ -50,6 +50,20 @@ class Agent:
         """
         self._active_model = model
 
+    async def list_models(self) -> list[str]:
+        """
+        Return names of all locally available Ollama models.
+
+        Returns:
+            Sorted list of model name strings, or empty list on error.
+        """
+        try:
+            response = await self._client.list()
+            return sorted(m.model for m in response.models)
+        except Exception as exc:
+            logger.exception("Failed to list Ollama models: %s", exc)
+            return []
+
     async def run(
         self,
         chat_id: int,
