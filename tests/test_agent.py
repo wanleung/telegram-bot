@@ -149,7 +149,62 @@ def test_set_model_changes_active_model(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_empty_content_response(tmp_path):
+async def test_image_passed_to_ollama(tmp_path):
+    """Images are forwarded to ollama chat as base64 strings."""
+    cfg = _make_config(tmp_path)
+    mcp = MagicMock()
+    mcp.get_tool_definitions.return_value = []
+    agent = Agent(cfg, mcp)
+
+    fake_b64 = "aGVsbG8="  # base64("hello")
+
+    with patch("agent.get_history", return_value=[]), \
+         patch("agent.save_messages"), \
+         patch.object(agent._client, "chat", return_value=_make_response(content="Nice image!")) as mock_chat:
+        result = await agent.run(chat_id=1, user_message="What is this?", images=[fake_b64])
+
+    assert result == "Nice image!"
+    sent = mock_chat.call_args[1]["messages"]
+    user_msg = next(m for m in sent if m["role"] == "user")
+    assert user_msg["images"] == [fake_b64]
+    assert user_msg["content"] == "What is this?"
+
+
+@pytest.mark.asyncio
+async def test_image_stored_as_placeholder_in_history(tmp_path):
+    """Images are stored in history as '[image] <caption>' not raw base64."""
+    cfg = _make_config(tmp_path)
+    mcp = MagicMock()
+    mcp.get_tool_definitions.return_value = []
+    agent = Agent(cfg, mcp)
+
+    with patch("agent.get_history", return_value=[]), \
+         patch("agent.save_messages") as mock_save, \
+         patch.object(agent._client, "chat", return_value=_make_response(content="ok")):
+        await agent.run(chat_id=1, user_message="describe it", images=["aGVsbG8="])
+
+    saved = mock_save.call_args[0][2]
+    assert saved[0]["role"] == "user"
+    assert saved[0]["content"] == "[image] describe it"
+    assert "aGVsbG8=" not in saved[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_no_image_message_unaffected(tmp_path):
+    """Plain text messages without images work exactly as before."""
+    cfg = _make_config(tmp_path)
+    mcp = MagicMock()
+    mcp.get_tool_definitions.return_value = []
+    agent = Agent(cfg, mcp)
+
+    with patch("agent.get_history", return_value=[]), \
+         patch("agent.save_messages") as mock_save, \
+         patch.object(agent._client, "chat", return_value=_make_response(content="pong")):
+        result = await agent.run(chat_id=1, user_message="ping")
+
+    assert result == "pong"
+    saved = mock_save.call_args[0][2]
+    assert saved[0] == {"role": "user", "content": "ping"}
     cfg = _make_config(tmp_path)
     mcp = MagicMock()
     mcp.get_tool_definitions.return_value = []

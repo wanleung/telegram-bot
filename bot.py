@@ -1,5 +1,6 @@
 """Telegram bot entry point orchestrating agent interactions with MCP tools."""
 
+import base64
 import logging
 import os
 
@@ -77,16 +78,28 @@ async def cmd_tools(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Handle user messages.
-    
-    Runs the agent and streams the response. Shows "thinking" placeholder
-    while waiting for the LLM to respond.
+    Handle user text messages and photo uploads.
+
+    For photos, downloads the highest-resolution version, base64-encodes it,
+    and passes it to the agent alongside any caption text. Requires a
+    vision-capable Ollama model (e.g. llava, llama3.2-vision).
     """
     agent: Agent = context.bot_data["agent"]
     thinking = await update.message.reply_text("⏳ Thinking…")
+
+    images: list[str] | None = None
+    user_text = update.message.text or update.message.caption or ""
+
+    if update.message.photo:
+        photo = update.message.photo[-1]  # highest resolution
+        file = await photo.get_file()
+        image_bytes = await file.download_as_bytearray()
+        images = [base64.b64encode(image_bytes).decode()]
+
     reply = await agent.run(
         chat_id=update.effective_chat.id,
-        user_message=update.message.text,
+        user_message=user_text,
+        images=images,
     )
     await thinking.edit_text(reply or "_(no response)_")
 
@@ -134,6 +147,7 @@ def main() -> None:
     app.add_handler(CommandHandler("clear", cmd_clear))
     app.add_handler(CommandHandler("tools", cmd_tools))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_message))
 
     logger.info("Bot starting with model '%s'", agent.active_model)
     app.run_polling(drop_pending_updates=True)

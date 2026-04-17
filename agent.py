@@ -50,7 +50,12 @@ class Agent:
         """
         self._active_model = model
 
-    async def run(self, chat_id: int, user_message: str) -> str:
+    async def run(
+        self,
+        chat_id: int,
+        user_message: str,
+        images: list[str] | None = None,
+    ) -> str:
         """
         Run the agent for a single user message.
 
@@ -60,6 +65,9 @@ class Agent:
         Args:
             chat_id: Unique identifier for the conversation.
             user_message: The user's input message.
+            images: Optional list of base64-encoded images to include with the
+                message. Requires a vision-capable model (e.g. llava,
+                llama3.2-vision). Stored in history as a text placeholder.
 
         Returns:
             The final text response from the LLM, or an error message if
@@ -69,7 +77,18 @@ class Agent:
             self._cfg.history.db_path, chat_id, self._cfg.history.max_messages
         )
         tools = self._mcp.get_tool_definitions()
-        messages = history + [{"role": "user", "content": user_message}]
+
+        # Build the outgoing user message; attach images for vision models.
+        user_msg: dict = {"role": "user", "content": user_message}
+        if images:
+            user_msg["images"] = images
+
+        # History placeholder — store caption text only, never raw base64.
+        history_user_content = (
+            f"[image] {user_message}" if images else user_message
+        )
+
+        messages = history + [user_msg]
 
         for _ in range(MAX_ITERATIONS):
             try:
@@ -109,7 +128,7 @@ class Agent:
                     self._cfg.history.db_path,
                     chat_id,
                     [
-                        {"role": "user", "content": user_message},
+                        {"role": "user", "content": history_user_content},
                         {"role": "assistant", "content": reply},
                     ],
                     self._cfg.history.max_messages,
@@ -121,7 +140,7 @@ class Agent:
             self._cfg.history.db_path,
             chat_id,
             [
-                {"role": "user", "content": user_message},
+                {"role": "user", "content": history_user_content},
                 {"role": "assistant", "content": warning},
             ],
             self._cfg.history.max_messages,

@@ -6,6 +6,7 @@ A single-user Telegram bot powered by a local [Ollama](https://ollama.com) insta
 
 - 🤖 Chat with any locally running Ollama model
 - 🔧 MCP tool-calling — connect stdio, SSE, and HTTP MCP servers
+- 🖼️ Image upload support for vision models (llava, llama3.2-vision, etc.)
 - 💾 Persistent per-chat conversation history (SQLite)
 - 🔄 Switch models at runtime via `/model`
 - ⚙️ YAML config with environment variable interpolation
@@ -101,6 +102,14 @@ CONFIG_PATH=/path/to/my-config.yaml python3 bot.py
 | `/clear` | Clear conversation history for this chat |
 
 Any other text message is sent to the Ollama agent, which may use MCP tools before responding.
+
+You can also **send a photo** (with optional caption) — the image is forwarded directly to the Ollama model. Switch to a vision-capable model first:
+
+```
+/model llama3.2-vision
+```
+
+Then send any photo. The caption becomes the prompt (defaults to empty if omitted).
 
 ## MCP Server Types
 
