@@ -53,11 +53,11 @@ async def test_simple_text_response(tmp_path):
 @pytest.mark.asyncio
 async def test_tool_call_then_text_response(tmp_path):
     cfg = _make_config(tmp_path)
-    mcp = AsyncMock()
+    mcp = MagicMock()
     mcp.get_tool_definitions.return_value = [
         {"type": "function", "function": {"name": "search_web"}}
     ]
-    mcp.call_tool.return_value = "Search result: Python docs"
+    mcp.call_tool = AsyncMock(return_value="Search result: Python docs")
     agent = Agent(cfg, mcp)
 
     tc = _make_tool_call("search_web", {"query": "python"})
@@ -76,9 +76,9 @@ async def test_tool_call_then_text_response(tmp_path):
 @pytest.mark.asyncio
 async def test_max_iterations_guard(tmp_path):
     cfg = _make_config(tmp_path)
-    mcp = AsyncMock()
+    mcp = MagicMock()
     mcp.get_tool_definitions.return_value = []
-    mcp.call_tool.return_value = "result"
+    mcp.call_tool = AsyncMock(return_value="result")
     agent = Agent(cfg, mcp)
 
     tc = _make_tool_call("loop_tool", {})
@@ -136,3 +136,18 @@ def test_set_model_changes_active_model(tmp_path):
     assert agent.active_model == "llama3.2"
     agent.set_model("mistral")
     assert agent.active_model == "mistral"
+
+
+@pytest.mark.asyncio
+async def test_empty_content_response(tmp_path):
+    cfg = _make_config(tmp_path)
+    mcp = MagicMock()
+    mcp.get_tool_definitions.return_value = []
+    agent = Agent(cfg, mcp)
+
+    with patch("agent.get_history", return_value=[]), \
+         patch("agent.save_messages"), \
+         patch.object(agent._client, "chat", return_value=_make_response(content=None)):
+        result = await agent.run(chat_id=1, user_message="Hi")
+
+    assert result == ""  # agent returns empty; bot.py guards with fallback

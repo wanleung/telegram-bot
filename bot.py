@@ -89,7 +89,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         chat_id=update.effective_chat.id,
         user_message=update.message.text,
     )
-    await thinking.edit_text(reply)
+    await thinking.edit_text(reply or "_(no response)_")
 
 
 async def main() -> None:

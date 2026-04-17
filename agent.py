@@ -30,7 +30,10 @@ class Agent:
         """
         self._cfg = config
         self._mcp = mcp_manager
-        self._client = ollama.AsyncClient(host=config.ollama.base_url)
+        self._client = ollama.AsyncClient(
+            host=config.ollama.base_url,
+            timeout=config.ollama.timeout,
+        )
         self._active_model: str = config.ollama.default_model
 
     @property
