@@ -79,6 +79,7 @@ class Agent:
                     tools=tools or None,
                 )
             except Exception as exc:
+                logger.exception("Ollama chat error for chat_id=%s: %s", chat_id, exc)
                 return f"⚠️ Ollama error: {exc}"
 
             msg = response.message

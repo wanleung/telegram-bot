@@ -66,11 +66,18 @@ async def test_tool_call_then_text_response(tmp_path):
 
     with patch("agent.get_history", return_value=[]), \
          patch("agent.save_messages"), \
-         patch.object(agent._client, "chat", side_effect=[tool_response, final_response]):
+         patch.object(agent._client, "chat", side_effect=[tool_response, final_response]) as mock_chat:
         result = await agent.run(chat_id=1, user_message="Search python")
 
     assert result == "Here is what I found."
     mcp.call_tool.assert_called_once_with("search_web", {"query": "python"})
+
+    # Check the second chat() call contains a tool message with the correct structure
+    second_call_messages = mock_chat.call_args_list[1][1]["messages"]
+    tool_messages = [m for m in second_call_messages if m.get("role") == "tool"]
+    assert len(tool_messages) >= 1
+    assert "tool_name" in tool_messages[0]
+    assert tool_messages[0]["tool_name"] == "search_web"
 
 
 @pytest.mark.asyncio
@@ -85,11 +92,14 @@ async def test_max_iterations_guard(tmp_path):
     always_tool = _make_response(content="", tool_calls=[tc])
 
     with patch("agent.get_history", return_value=[]), \
-         patch("agent.save_messages"), \
+         patch("agent.save_messages") as mock_save, \
          patch.object(agent._client, "chat", return_value=always_tool):
         result = await agent.run(chat_id=1, user_message="loop")
 
     assert "maximum" in result.lower()
+    mock_save.assert_called_once()
+    saved_messages = mock_save.call_args[0][2]
+    assert saved_messages[0] == {"role": "user", "content": "loop"}
 
 
 @pytest.mark.asyncio
