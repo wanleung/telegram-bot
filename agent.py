@@ -99,7 +99,7 @@ class Agent:
                     messages.append({
                         "role": "tool",
                         "content": result,
-                        "name": tc.function.name,
+                        "tool_name": tc.function.name,
                     })
             else:
                 # No tool calls, save conversation and return response
@@ -115,4 +115,14 @@ class Agent:
                 )
                 return reply
 
-        return "⚠️ Reached maximum tool call iterations. Please try again."
+        warning = "⚠️ Reached maximum tool call iterations. Please try again."
+        await save_messages(
+            self._cfg.history.db_path,
+            chat_id,
+            [
+                {"role": "user", "content": user_message},
+                {"role": "assistant", "content": warning},
+            ],
+            self._cfg.history.max_messages,
+        )
+        return warning

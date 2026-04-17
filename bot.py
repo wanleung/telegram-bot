@@ -1,6 +1,5 @@
 """Telegram bot entry point orchestrating agent interactions with MCP tools."""
 
-import asyncio
 import logging
 import os
 
@@ -92,25 +91,40 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await thinking.edit_text(reply or "_(no response)_")
 
 
-async def main() -> None:
+async def _post_init(application: Application) -> None:
+    """Run async startup tasks after the bot is initialized."""
+    cfg = application.bot_data["config"]
+    os.makedirs(os.path.dirname(cfg.history.db_path) or ".", exist_ok=True)
+    await init_db(cfg.history.db_path)
+    mcp: MCPManager = application.bot_data["mcp"]
+    await mcp.start()
+
+
+async def _post_shutdown(application: Application) -> None:
+    """Run async cleanup tasks after polling stops."""
+    await application.bot_data["mcp"].stop()
+
+
+def main() -> None:
     """
     Initialize and run the Telegram bot.
-    
-    Loads configuration, initializes database, connects to MCP servers,
-    creates the agent, and starts the polling loop.
+
+    Loads configuration, registers PTB lifecycle hooks for async startup/cleanup,
+    registers command and message handlers, and starts the polling loop.
     """
     config_path = os.environ.get("CONFIG_PATH", "config.yaml")
     cfg = load_config(config_path)
 
-    os.makedirs(os.path.dirname(cfg.history.db_path) or ".", exist_ok=True)
-    await init_db(cfg.history.db_path)
-
     mcp = MCPManager(cfg.mcp_servers)
-    await mcp.start()
-
     agent = Agent(cfg, mcp)
 
-    app = Application.builder().token(cfg.telegram.token).build()
+    app = (
+        Application.builder()
+        .token(cfg.telegram.token)
+        .post_init(_post_init)
+        .post_shutdown(_post_shutdown)
+        .build()
+    )
     app.bot_data["config"] = cfg
     app.bot_data["agent"] = agent
     app.bot_data["mcp"] = mcp
@@ -122,11 +136,8 @@ async def main() -> None:
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("Bot starting with model '%s'", agent.active_model)
-    try:
-        await app.run_polling(drop_pending_updates=True)
-    finally:
-        await mcp.stop()
+    app.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
