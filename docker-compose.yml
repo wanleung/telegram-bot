@@ -1,0 +1,16 @@
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - bot-data:/app/data
+    environment:
+      - TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
+    # Allow the bot to reach a locally running Ollama instance.
+    # On Linux, use host network so localhost resolves to the host.
+    # On Mac/Windows, set ollama.base_url to http://host.docker.internal:11434
+    network_mode: host
+
+volumes:
+  bot-data:

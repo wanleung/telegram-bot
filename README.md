@@ -130,6 +130,54 @@ telegram-bot/
     └── test_mcp_manager.py
 ```
 
+## Deployment
+
+### Docker
+
+```bash
+# Build and start
+docker compose up -d
+
+# View logs
+docker compose logs -f
+
+# Stop
+docker compose down
+```
+
+`config.yaml` is mounted read-only into the container. Conversation history is stored in a named Docker volume (`bot-data`).
+
+> **Connecting to a local Ollama:** `docker-compose.yml` uses `network_mode: host` (Linux). On macOS/Windows, remove that line and set `ollama.base_url: "http://host.docker.internal:11434"` in `config.yaml`.
+
+---
+
+### Daemon (systemd)
+
+```bash
+# 1. Copy files to /opt/telegram-bot
+sudo cp -r . /opt/telegram-bot
+sudo python3 -m venv /opt/telegram-bot/venv
+sudo /opt/telegram-bot/venv/bin/pip install -r /opt/telegram-bot/requirements.txt
+
+# 2. Create the environment file with your token
+sudo tee /etc/telegram-bot.env <<EOF
+TELEGRAM_TOKEN=your-token-here
+EOF
+sudo chmod 600 /etc/telegram-bot.env
+
+# 3. Install and enable the service (replace 'youruser' with the user to run as)
+sudo cp telegram-bot.service /etc/systemd/system/telegram-bot@youruser.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now telegram-bot@youruser
+
+# View logs
+journalctl -u telegram-bot@youruser -f
+```
+
+The service restarts automatically on failure (`Restart=on-failure`).
+
+---
+
 ## Running Tests
 
 ```bash
