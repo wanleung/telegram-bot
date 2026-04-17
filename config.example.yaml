@@ -1,0 +1,27 @@
+telegram:
+  token: "${TELEGRAM_TOKEN}"   # export TELEGRAM_TOKEN=your-token-here
+
+ollama:
+  base_url: "http://localhost:11434"
+  default_model: "llama3.2"
+  timeout: 120
+
+history:
+  max_messages: 50
+  db_path: "data/history.db"
+
+mcp_servers:
+  filesystem:
+    type: stdio
+    command: ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/home/user"]
+    enabled: true
+
+  web_search:
+    type: sse
+    url: "http://localhost:8080/sse"
+    enabled: false
+
+  custom_http:
+    type: http
+    url: "http://localhost:9000/mcp"
+    enabled: false
