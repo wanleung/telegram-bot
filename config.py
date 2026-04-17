@@ -1,7 +1,8 @@
 import os
 import re
 import yaml
-from pydantic import BaseModel
+from typing import Literal
+from pydantic import BaseModel, model_validator
 
 
 class TelegramConfig(BaseModel):
@@ -20,10 +21,18 @@ class HistoryConfig(BaseModel):
 
 
 class MCPServerConfig(BaseModel):
-    type: str  # "stdio", "sse", "http"
+    type: Literal["stdio", "sse", "http"]
     command: list[str] | None = None
     url: str | None = None
     enabled: bool = True
+
+    @model_validator(mode="after")
+    def check_fields_for_type(self) -> "MCPServerConfig":
+        if self.type == "stdio" and not self.command:
+            raise ValueError("MCP server type 'stdio' requires 'command'")
+        if self.type in ("sse", "http") and not self.url:
+            raise ValueError(f"MCP server type '{self.type}' requires 'url'")
+        return self
 
 
 class Config(BaseModel):

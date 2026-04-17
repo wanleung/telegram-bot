@@ -108,3 +108,45 @@ mcp_servers:
 """)
     cfg = load_config(path)
     assert cfg.mcp_servers["remote"].enabled is False
+
+
+def test_mcp_server_invalid_type_raises(tmp_path):
+    path = write_cfg(tmp_path, """
+telegram:
+  token: "tok"
+ollama:
+  default_model: "llama3.2"
+mcp_servers:
+  bad:
+    type: grpc
+""")
+    with pytest.raises(ValidationError):
+        load_config(path)
+
+
+def test_mcp_stdio_without_command_raises(tmp_path):
+    path = write_cfg(tmp_path, """
+telegram:
+  token: "tok"
+ollama:
+  default_model: "llama3.2"
+mcp_servers:
+  fs:
+    type: stdio
+""")
+    with pytest.raises(ValidationError):
+        load_config(path)
+
+
+def test_mcp_sse_without_url_raises(tmp_path):
+    path = write_cfg(tmp_path, """
+telegram:
+  token: "tok"
+ollama:
+  default_model: "llama3.2"
+mcp_servers:
+  remote:
+    type: sse
+""")
+    with pytest.raises(ValidationError):
+        load_config(path)
