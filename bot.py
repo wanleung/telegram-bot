@@ -73,10 +73,10 @@ async def cmd_models(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await update.message.reply_text(f"*Available models:*\n{lines}", parse_mode="Markdown")
 
 
-
+async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Handle /clear command.
-    
+
     Clears the conversation history for the current chat.
     """
     cfg = context.bot_data["config"]
