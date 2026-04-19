@@ -11,6 +11,7 @@ from config import load_config
 from history import init_db, clear_history
 from mcp_manager import MCPManager
 from agent import Agent
+from utils import md_to_telegram_html
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -119,7 +120,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         user_message=user_text,
         images=images,
     )
-    await thinking.edit_text(reply or "_(no response)_")
+    formatted = md_to_telegram_html(reply) if reply else "_(no response)_"
+    parse_mode = "HTML" if reply else "Markdown"
+    await thinking.edit_text(formatted, parse_mode=parse_mode)
 
 
 async def _post_init(application: Application) -> None:
