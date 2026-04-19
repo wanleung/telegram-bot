@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from agent import Agent, MAX_ITERATIONS
+from agent import Agent, MAX_ITERATIONS, _parse_text_tool_calls
 from config import Config, TelegramConfig, OllamaConfig, HistoryConfig
 
 
@@ -235,6 +235,10 @@ async def test_no_image_message_unaffected(tmp_path):
     assert result == "pong"
     saved = mock_save.call_args[0][2]
     assert saved[0] == {"role": "user", "content": "ping"}
+
+
+@pytest.mark.asyncio
+async def test_empty_content_response(tmp_path):
     cfg = _make_config(tmp_path)
     mcp = MagicMock()
     mcp.get_tool_definitions.return_value = []
@@ -246,3 +250,61 @@ async def test_no_image_message_unaffected(tmp_path):
         result = await agent.run(chat_id=1, user_message="Hi")
 
     assert result == ""  # agent returns empty; bot.py guards with fallback
+
+
+# --- Text tool-call format (fallback parser) ---
+
+def test_parse_text_tool_calls_python_tags():
+    """Parses <|python_start|>...<|python_end|> format."""
+    content = '<|python_start|>{"type": "function", "name": "get_status", "parameters": {}}<|python_end|>'
+    calls = _parse_text_tool_calls(content)
+    assert calls == [{"name": "get_status", "arguments": {}}]
+
+
+def test_parse_text_tool_calls_with_arguments():
+    """Parses tool calls that include parameters."""
+    content = '<|python_start|>{"name": "search", "parameters": {"query": "python"}}<|python_end|>'
+    calls = _parse_text_tool_calls(content)
+    assert calls == [{"name": "search", "arguments": {"query": "python"}}]
+
+
+def test_parse_text_tool_calls_no_match():
+    """Returns None for plain text with no tool-call markers."""
+    assert _parse_text_tool_calls("Hello, how can I help?") is None
+
+
+def test_parse_text_tool_calls_multiple():
+    """Parses multiple tool calls in one message."""
+    content = (
+        '<|python_start|>{"name": "tool_a", "parameters": {}}<|python_end|>'
+        '<|python_start|>{"name": "tool_b", "parameters": {"x": 1}}<|python_end|>'
+    )
+    calls = _parse_text_tool_calls(content)
+    assert len(calls) == 2
+    assert calls[0]["name"] == "tool_a"
+    assert calls[1] == {"name": "tool_b", "arguments": {"x": 1}}
+
+
+@pytest.mark.asyncio
+async def test_text_tool_call_fallback_executed(tmp_path):
+    """Agent executes tool calls embedded as text when msg.tool_calls is empty."""
+    cfg = _make_config(tmp_path)
+    mcp = MagicMock()
+    mcp.get_tool_definitions.return_value = [
+        {"type": "function", "function": {"name": "get_status"}}
+    ]
+    mcp.call_tool = AsyncMock(return_value="All lines good")
+    agent = Agent(cfg, mcp)
+
+    text_tool_response = _make_response(
+        content='<|python_start|>{"type": "function", "name": "get_status", "parameters": {}}<|python_end|>'
+    )
+    final_response = _make_response(content="All lines are running normally.")
+
+    with patch("agent.get_history", return_value=[]), \
+         patch("agent.save_messages"), \
+         patch.object(agent._client, "chat", side_effect=[text_tool_response, final_response]):
+        result = await agent.run(chat_id=1, user_message="list line status")
+
+    assert result == "All lines are running normally."
+    mcp.call_tool.assert_called_once_with("get_status", {})
