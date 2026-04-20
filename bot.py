@@ -154,12 +154,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # RAG: retrieve relevant chunks and format as context block
     rag_context: str | None = None
-    try:
-        chunks = await rag.search(user_text)
-        if chunks:
-            rag_context = "### Context\n" + "\n\n".join(chunks)
-    except Exception as exc:
-        logger.warning("RAG search failed, continuing without context: %s", exc)
+    if user_text.strip():
+        try:
+            chunks = await rag.search(user_text)
+            if chunks:
+                rag_context = "### Context\n" + "\n\n".join(chunks)
+        except Exception as exc:
+            logger.warning("RAG search failed, continuing without context: %s", exc)
 
     reply = await agent.run(
         chat_id=update.effective_chat.id,
