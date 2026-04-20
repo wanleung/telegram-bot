@@ -2,7 +2,7 @@ import os
 import re
 import yaml
 from typing import Literal
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 
 class TelegramConfig(BaseModel):
@@ -22,10 +22,10 @@ class HistoryConfig(BaseModel):
 
 class RagConfig(BaseModel):
     enabled: bool = False
-    embed_model: str = "nomic-embed-text"
-    db_path: str = "data/chroma"
-    top_k: int = 4
-    similarity_threshold: float = 0.5
+    embed_model: str = Field(default="nomic-embed-text", min_length=1)
+    db_path: str = Field(default="data/chroma", min_length=1)
+    top_k: int = Field(default=4, gt=0)
+    similarity_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
 
 
 class MCPServerConfig(BaseModel):

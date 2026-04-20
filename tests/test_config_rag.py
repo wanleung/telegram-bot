@@ -1,4 +1,5 @@
 import pytest
+from pydantic import ValidationError
 from config import load_config, RagConfig
 
 
@@ -27,3 +28,15 @@ def test_rag_config_custom(tmp_path):
     assert cfg.rag.enabled is True
     assert cfg.rag.embed_model == "mxbai-embed-large"
     assert cfg.rag.top_k == 6
+    assert cfg.rag.db_path == "data/chroma"
+    assert cfg.rag.similarity_threshold == 0.5
+
+
+def test_rag_config_rejects_invalid_top_k():
+    with pytest.raises(ValidationError):
+        RagConfig(top_k=0)
+
+
+def test_rag_config_rejects_invalid_threshold():
+    with pytest.raises(ValidationError):
+        RagConfig(similarity_threshold=1.5)
