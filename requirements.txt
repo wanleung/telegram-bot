@@ -8,5 +8,6 @@ markdown
 chromadb
 pypdf
 beautifulsoup4
+httpx
 pytest
 pytest-asyncio
