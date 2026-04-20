@@ -12,6 +12,8 @@ from history import init_db, clear_history
 from mcp_manager import MCPManager
 from agent import Agent
 from utils import md_to_telegram_html
+from rag import RagManager
+from ingest import ingest_source
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -34,7 +36,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"  /models — list available models\n"
         f"  /model <name> — switch model\n"
         f"  /clear — clear conversation history\n"
-        f"  /tools — list available MCP tools",
+        f"  /tools — list available MCP tools\n"
+        f"  /ingest <collection> <url-or-path> — add document to RAG\n"
+        f"  /collections — list RAG knowledge base collections",
         parse_mode="Markdown",
     )
 
@@ -95,30 +99,73 @@ async def cmd_tools(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(mcp.list_tools_summary(), parse_mode="Markdown")
 
 
+async def cmd_ingest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /ingest <collection> <url-or-path> — ingest a document into RAG."""
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "Usage: /ingest <collection> <url-or-path>\n"
+            "Example: /ingest rfcs https://rfc-editor.org/rfc/rfc9110.txt"
+        )
+        return
+    collection = context.args[0]
+    source = context.args[1]
+    rag: RagManager = context.bot_data["rag"]
+    thinking = await update.message.reply_text(f"⏳ Ingesting {source}…")
+    try:
+        count = await ingest_source(rag, collection, source)
+        if count == 0:
+            await thinking.edit_text(f"ℹ️ Already ingested or empty: {source}")
+        else:
+            await thinking.edit_text(f"✅ Ingested {count} chunks into '{collection}'.")
+    except Exception as exc:
+        await thinking.edit_text(f"⚠️ Ingest failed: {exc}")
+
+
+async def cmd_collections(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /collections — list all RAG collections with chunk counts."""
+    rag: RagManager = context.bot_data["rag"]
+    cols = rag.list_collections()
+    if not cols:
+        await update.message.reply_text("No collections found. Use /ingest to add documents.")
+        return
+    lines = "\n".join(f"  • <b>{c['name']}</b> — {c['count']} chunks" for c in cols)
+    await update.message.reply_text(f"<b>RAG Collections:</b>\n{lines}", parse_mode="HTML")
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Handle user text messages and photo uploads.
 
-    For photos, downloads the highest-resolution version, base64-encodes it,
-    and passes it to the agent alongside any caption text. Requires a
-    vision-capable Ollama model (e.g. llava, llama3.2-vision).
+    Searches the RAG knowledge base and injects relevant context into the
+    agent prompt before calling Ollama.
     """
     agent: Agent = context.bot_data["agent"]
+    rag: RagManager = context.bot_data["rag"]
     thinking = await update.message.reply_text("⏳ Thinking…")
 
     images: list[str] | None = None
     user_text = update.message.text or update.message.caption or ""
 
     if update.message.photo:
-        photo = update.message.photo[-1]  # highest resolution
+        photo = update.message.photo[-1]
         file = await photo.get_file()
         image_bytes = await file.download_as_bytearray()
         images = [base64.b64encode(image_bytes).decode()]
+
+    # RAG: retrieve relevant chunks and format as context block
+    rag_context: str | None = None
+    try:
+        chunks = await rag.search(user_text)
+        if chunks:
+            rag_context = "### Context\n" + "\n\n".join(chunks)
+    except Exception as exc:
+        logger.warning("RAG search failed, continuing without context: %s", exc)
 
     reply = await agent.run(
         chat_id=update.effective_chat.id,
         user_message=user_text,
         images=images,
+        context=rag_context,
     )
     formatted = md_to_telegram_html(reply) if reply else "_(no response)_"
     parse_mode = "HTML" if reply else "Markdown"
@@ -132,6 +179,7 @@ async def _post_init(application: Application) -> None:
     await init_db(cfg.history.db_path)
     mcp: MCPManager = application.bot_data["mcp"]
     await mcp.start()
+    application.bot_data["rag"] = RagManager(cfg.rag)
 
 
 async def _post_shutdown(application: Application) -> None:
@@ -168,6 +216,8 @@ def main() -> None:
     app.add_handler(CommandHandler("model", cmd_model))
     app.add_handler(CommandHandler("clear", cmd_clear))
     app.add_handler(CommandHandler("tools", cmd_tools))
+    app.add_handler(CommandHandler("ingest", cmd_ingest))
+    app.add_handler(CommandHandler("collections", cmd_collections))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.PHOTO, handle_message))
 
