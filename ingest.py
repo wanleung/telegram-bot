@@ -59,7 +59,8 @@ def collect_links(html: str, base_url: str) -> list[str]:
     for tag in soup.find_all("a", href=True):
         href = tag["href"]
         absolute = urljoin(base_url, href)
-        parsed = urlparse(absolute)
+        parsed = urlparse(absolute)._replace(fragment="")
+        absolute = parsed.geturl()
         if parsed.netloc == base_domain and absolute not in seen:
             seen.add(absolute)
             links.append(absolute)
@@ -83,7 +84,11 @@ async def ingest_source(
         logger.error("Failed to read %s: %s", source, exc)
         return 0
 
-    return await manager.ingest(collection, source, text)
+    try:
+        return await manager.ingest(collection, source, text)
+    except Exception as exc:
+        logger.error("Failed to ingest %s: %s", source, exc)
+        return 0
 
 
 async def crawl(
@@ -97,37 +102,40 @@ async def crawl(
     queue: list[tuple[str, int]] = [(start_url, 0)]
     base_domain = urlparse(start_url).netloc
 
-    while queue:
-        url, depth = queue.pop(0)
-        if url in visited:
-            continue
-        visited.add(url)
+    async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
+        while queue:
+            url, depth = queue.pop(0)
+            if url in visited:
+                continue
+            visited.add(url)
 
-        print(f"[{len(visited)}/~] {url}")
-        try:
-            async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
+            print(f"[{len(visited)}/~] {url}")
+            try:
                 response = await client.get(url)
                 response.raise_for_status()
                 content_type = response.headers.get("content-type", "")
                 html = response.text
-        except Exception as exc:
-            logger.warning("Skipping %s: %s", url, exc)
-            continue
+            except Exception as exc:
+                logger.warning("Skipping %s: %s", url, exc)
+                continue
 
-        if "html" in content_type:
-            soup = BeautifulSoup(html, "html.parser")
-            for tag in soup(["script", "style", "nav", "footer", "header"]):
-                tag.decompose()
-            text = soup.get_text(separator="\n", strip=True)
+            if "html" in content_type:
+                soup = BeautifulSoup(html, "html.parser")
+                for tag in soup(["script", "style", "nav", "footer", "header"]):
+                    tag.decompose()
+                text = soup.get_text(separator="\n", strip=True)
 
-            if depth < max_depth:
-                for link in collect_links(html, url):
-                    if link not in visited and urlparse(link).netloc == base_domain:
-                        queue.append((link, depth + 1))
-        else:
-            text = html
+                if depth < max_depth:
+                    for link in collect_links(html, url):
+                        if link not in visited and urlparse(link).netloc == base_domain:
+                            queue.append((link, depth + 1))
+            else:
+                text = html
 
-        await manager.ingest(collection, url, text)
+            try:
+                await manager.ingest(collection, url, text)
+            except Exception as exc:
+                logger.warning("Failed to ingest %s: %s", url, exc)
 
 
 async def main_async(args: argparse.Namespace) -> None:
@@ -142,8 +150,7 @@ async def main_async(args: argparse.Namespace) -> None:
     collection = args.collection
 
     if args.crawl:
-        depth = args.depth if hasattr(args, "depth") and args.depth else 2
-        await crawl(manager, collection, args.crawl, max_depth=depth)
+        await crawl(manager, collection, args.crawl, max_depth=args.depth)
 
     elif args.url_file:
         with open(args.url_file) as f:

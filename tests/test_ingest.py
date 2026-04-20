@@ -78,3 +78,36 @@ async def test_fetch_url_text_html_strips_tags():
         text = await fetch_url_text("https://example.com/page.html")
     assert "Hello world" in text
     assert "<p>" not in text
+
+
+def test_collect_links_excludes_fragments():
+    html = """<html><body>
+    <a href="#top">Top</a>
+    <a href="/page#section">Section</a>
+    </body></html>"""
+    links = collect_links(html, base_url="https://example.com")
+    # Fragment-only link resolves to base URL (no fragment)
+    assert "https://example.com" in links or links == ["https://example.com/page"]
+    # /page#section should appear as /page (no fragment)
+    assert all("#" not in link for link in links)
+
+
+@pytest.mark.asyncio
+async def test_ingest_source_file_not_found():
+    from ingest import ingest_source
+    mock_manager = MagicMock()
+    mock_manager.ingest = AsyncMock(return_value=0)
+    count = await ingest_source(mock_manager, "col", "/nonexistent/path.txt")
+    assert count == 0
+    mock_manager.ingest.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_ingest_source_ingest_failure(tmp_path):
+    from ingest import ingest_source
+    test_file = tmp_path / "test.txt"
+    test_file.write_text("some content")
+    mock_manager = MagicMock()
+    mock_manager.ingest = AsyncMock(side_effect=RuntimeError("embed failed"))
+    count = await ingest_source(mock_manager, "col", str(test_file))
+    assert count == 0
