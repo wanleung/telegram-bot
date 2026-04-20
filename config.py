@@ -20,6 +20,14 @@ class HistoryConfig(BaseModel):
     db_path: str = "data/history.db"
 
 
+class RagConfig(BaseModel):
+    enabled: bool = False
+    embed_model: str = "nomic-embed-text"
+    db_path: str = "data/chroma"
+    top_k: int = 4
+    similarity_threshold: float = 0.5
+
+
 class MCPServerConfig(BaseModel):
     type: Literal["stdio", "sse", "http"]
     command: list[str] | None = None
@@ -39,6 +47,7 @@ class Config(BaseModel):
     telegram: TelegramConfig
     ollama: OllamaConfig
     history: HistoryConfig = HistoryConfig()
+    rag: RagConfig = RagConfig()
     mcp_servers: dict[str, MCPServerConfig] = {}
 
 

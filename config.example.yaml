@@ -10,6 +10,13 @@ history:
   max_messages: 50
   db_path: "data/history.db"
 
+rag:
+  enabled: false
+  embed_model: "nomic-embed-text"
+  db_path: "data/chroma"
+  top_k: 4
+  similarity_threshold: 0.5
+
 mcp_servers:
   filesystem:
     type: stdio
