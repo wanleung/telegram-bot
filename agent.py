@@ -104,6 +104,7 @@ class Agent:
         chat_id: int,
         user_message: str,
         images: list[str] | None = None,
+        context: str | None = None,
     ) -> str:
         """
         Run the agent for a single user message.
@@ -117,6 +118,8 @@ class Agent:
             images: Optional list of base64-encoded images to include with the
                 message. Requires a vision-capable model (e.g. llava,
                 llama3.2-vision). Stored in history as a text placeholder.
+            context: Optional RAG context to inject as a system message before
+                history. Used for providing retrieved document chunks.
 
         Returns:
             The final text response from the LLM, or an error message if
@@ -126,6 +129,11 @@ class Agent:
             self._cfg.history.db_path, chat_id, self._cfg.history.max_messages
         )
         tools = self._mcp.get_tool_definitions()
+
+        # Prepend RAG context as a system message when provided.
+        prefix: list[dict] = []
+        if context:
+            prefix = [{"role": "system", "content": context}]
 
         # Build the outgoing user message; attach images for vision models.
         user_msg: dict = {"role": "user", "content": user_message}
@@ -137,7 +145,7 @@ class Agent:
             f"[image] {user_message}" if images else user_message
         )
 
-        messages = history + [user_msg]
+        messages = prefix + history + [user_msg]
 
         for _ in range(MAX_ITERATIONS):
             try:
