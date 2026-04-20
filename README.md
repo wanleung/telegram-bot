@@ -100,6 +100,8 @@ CONFIG_PATH=/path/to/my-config.yaml python3 bot.py
 | `/model <name>` | Switch to a different Ollama model |
 | `/tools` | List all available MCP tools |
 | `/clear` | Clear conversation history for this chat |
+| `/ingest <collection> <url-or-path>` | Ingest a document into RAG |
+| `/collections` | List all RAG collections with chunk counts |
 
 Any other text message is sent to the Ollama agent, which may use MCP tools before responding.
 
@@ -110,6 +112,69 @@ You can also **send a photo** (with optional caption) — the image is forwarded
 ```
 
 Then send any photo. The caption becomes the prompt (defaults to empty if omitted).
+
+## RAG (Retrieval-Augmented Generation)
+
+Always-on retrieval: every user message triggers a search of the local ChromaDB knowledge base. Relevant chunks are injected as context into the Ollama prompt. Ideal for grounding responses in RFCs, documentation, or any local knowledge base.
+
+### Prerequisites
+
+```bash
+ollama pull nomic-embed-text
+```
+
+### Configuration
+
+Enable RAG in `config.yaml`:
+
+```yaml
+rag:
+  enabled: true
+  embed_model: nomic-embed-text
+  db_path: data/chroma
+  top_k: 5
+  similarity_threshold: 0.4
+```
+
+**Field descriptions:**
+
+- `enabled` — set to `true` to activate RAG (default: `false`)
+- `embed_model` — Ollama embedding model (default: `nomic-embed-text`)
+- `db_path` — ChromaDB persistence directory (default: `data/chroma`)
+- `top_k` — number of chunks to retrieve per query (default: 5)
+- `similarity_threshold` — minimum cosine similarity to include a chunk (default: 0.4)
+
+### Ingesting documents (CLI)
+
+**Single file or URL:**
+
+```bash
+python ingest.py --collection rfcs https://rfc-editor.org/rfc/rfc9110.txt
+python ingest.py --collection docs /path/to/spec.pdf
+python ingest.py --collection notes /path/to/notes.txt
+```
+
+**Batch from URL list file:**
+
+```bash
+# urls.txt: one URL per line
+python ingest.py --collection rfcs --url-file urls.txt
+```
+
+**Recursive web crawl:**
+
+```bash
+python ingest.py --collection docs --crawl https://docs.example.com --depth 2
+```
+
+### Bot commands
+
+- `/ingest <collection> <url-or-path>` — ingest a document from the bot
+- `/collections` — list all RAG collections with chunk counts
+
+### How it works
+
+Each user message is embedded with `nomic-embed-text`, and the top-k most similar chunks are retrieved from ChromaDB across all collections. Results above the similarity threshold are prepended to the Ollama prompt as a `### Context` block. If RAG is disabled or unavailable, the bot falls back to standard operation.
 
 ## MCP Server Types
 
@@ -130,13 +195,17 @@ telegram-bot/
 ├── mcp_manager.py    # MCP server connections and tool registry
 ├── config.py         # Pydantic config loader with env var resolution
 ├── history.py        # Async SQLite conversation history
+├── rag.py            # RAG retrieval logic using ChromaDB
+├── ingest.py         # CLI for ingesting documents into RAG
 ├── config.example.yaml
 ├── requirements.txt
 └── tests/
     ├── test_agent.py
     ├── test_config.py
     ├── test_history.py
-    └── test_mcp_manager.py
+    ├── test_mcp_manager.py
+    ├── test_rag.py
+    └── test_ingest.py
 ```
 
 ## Deployment
@@ -208,3 +277,8 @@ python3 -m pytest
 | `mcp_servers.<name>.enabled` | `true` | Enable/disable server |
 | `mcp_servers.<name>.command` | — | Command list (stdio only) |
 | `mcp_servers.<name>.url` | — | Endpoint URL (sse/http only) |
+| `rag.enabled` | `false` | Enable RAG retrieval |
+| `rag.embed_model` | `nomic-embed-text` | Ollama embedding model |
+| `rag.db_path` | `data/chroma` | ChromaDB persistence directory |
+| `rag.top_k` | `5` | Number of chunks to retrieve per query |
+| `rag.similarity_threshold` | `0.4` | Minimum cosine similarity for chunk inclusion |
