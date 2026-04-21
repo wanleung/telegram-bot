@@ -1,15 +1,42 @@
 # Telegram Ollama Bot
 
-A single-user Telegram bot powered by a local [Ollama](https://ollama.com) instance with [MCP](https://modelcontextprotocol.io) (Model Context Protocol) tool-calling support.
+A single-user Telegram bot powered by a local [Ollama](https://ollama.com) instance with [MCP](https://modelcontextprotocol.io) tool-calling and [RAG](https://en.wikipedia.org/wiki/Retrieval-augmented_generation) support.
 
 ## Features
 
 - 🤖 Chat with any locally running Ollama model
 - 🔧 MCP tool-calling — connect stdio, SSE, and HTTP MCP servers
+- 📚 RAG — ground responses in local documents (RFCs, PDFs, web pages)
 - 🖼️ Image upload support for vision models (llava, llama3.2-vision, etc.)
 - 💾 Persistent per-chat conversation history (SQLite)
 - 🔄 Switch models at runtime via `/model`
 - ⚙️ YAML config with environment variable interpolation
+
+## Quick Start
+
+```bash
+# 1. Clone and install
+git clone git@github.com:wanleung/telegram-bot.git
+cd telegram-bot
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+
+# 2. Configure
+cp config.example.yaml config.yaml
+# Edit config.yaml: set telegram.token and ollama.default_model
+
+# 3. Pull a model and run
+ollama pull llama3.2
+python3 bot.py
+```
+
+To enable RAG:
+
+```bash
+ollama pull nomic-embed-text
+# Set rag.enabled: true in config.yaml
+python ingest.py --collection docs /path/to/file.pdf
+```
 
 ## Requirements
 
@@ -112,6 +139,25 @@ You can also **send a photo** (with optional caption) — the image is forwarded
 ```
 
 Then send any photo. The caption becomes the prompt (defaults to empty if omitted).
+
+## Markdown in Telegram
+
+Telegram renders a limited subset of Markdown. The bot sends responses as plain text by default, so headers (`###`), bold (`**`), and tables from the model appear as raw characters.
+
+To get cleaner output, instruct the model via a system prompt to avoid Markdown:
+
+> "Respond in plain text without Markdown formatting. Use plain lists instead of tables."
+
+If you enable `parse_mode=MarkdownV2` in `bot.py`, use Telegram-compatible syntax only:
+
+| Formatting | Telegram syntax |
+|---|---|
+| Bold | `*bold*` |
+| Italic | `_italic_` |
+| Code | `` `code` `` |
+| Pre | ` ```block``` ` |
+
+Note: tables and `###` headings are not supported in Telegram Markdown.
 
 ## RAG (Retrieval-Augmented Generation)
 
@@ -223,9 +269,14 @@ docker compose logs -f
 docker compose down
 ```
 
-`config.yaml` is mounted read-only into the container. Conversation history is stored in a named Docker volume (`bot-data`).
+`config.yaml` is mounted read-only into the container. The `bot-data` Docker volume persists both conversation history (`data/history.db`) and the RAG knowledge base (`data/chroma`) across container restarts.
 
 > **Connecting to a local Ollama:** `docker-compose.yml` uses `network_mode: host` (Linux). On macOS/Windows, remove that line and set `ollama.base_url: "http://host.docker.internal:11434"` in `config.yaml`.
+
+> **RAG with Docker:** Run `ingest.py` inside the container to populate the knowledge base into the `bot-data` volume:
+> ```bash
+> docker compose run --rm bot python ingest.py --collection rfcs https://rfc-editor.org/rfc/rfc9110.txt
+> ```
 
 ---
 
