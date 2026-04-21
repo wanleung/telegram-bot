@@ -222,6 +222,54 @@ python ingest.py --collection docs --crawl https://docs.example.com --depth 2
 
 Each user message is embedded with `nomic-embed-text`, and the top-k most similar chunks are retrieved from ChromaDB across all collections. Results above the similarity threshold are prepended to the Ollama prompt as a `### Context` block. If RAG is disabled or unavailable, the bot falls back to standard operation.
 
+## vLLM Backend
+
+The bot supports [vLLM](https://github.com/vllm-project/vllm) as an alternative to Ollama for both chat and embeddings. vLLM must expose an OpenAI-compatible API (enabled by default).
+
+### Quick switch
+
+In `config.yaml`:
+
+```yaml
+backend: vllm
+
+vllm:
+  base_url: http://localhost:8000          # local vLLM
+  # base_url: http://192.168.1.50:8000    # or any network address
+  default_model: meta-llama/Llama-3.2-3B-Instruct
+  timeout: 120
+```
+
+Set `ollama:` to `null` or remove it if you are using vLLM for both chat **and** embeddings (`rag.embed_backend: vllm`). If you keep Ollama for embeddings (the default), the `ollama:` block is still required.
+
+### Embedding backend
+
+By default, RAG embeddings use Ollama (`nomic-embed-text`). To use vLLM's embedding endpoint instead:
+
+```yaml
+rag:
+  embed_backend: vllm
+  embed_model: intfloat/e5-mistral-7b-instruct
+```
+
+vLLM must be serving an embedding-capable model. If the embed endpoint fails, RAG degrades gracefully (returns empty context).
+
+### Starting vLLM
+
+```bash
+pip install vllm
+vllm serve meta-llama/Llama-3.2-3B-Instruct --port 8000
+```
+
+### Ollama vs vLLM
+
+| Feature | Ollama | vLLM |
+|---|---|---|
+| API | Native Ollama | OpenAI-compatible |
+| Text tool-call fallback | ✅ (`<\|python_start\|>`) | ❌ (not needed) |
+| Embedding models | ✅ (`nomic-embed-text`) | ✅ (if model loaded) |
+| Model management | `ollama pull <model>` | CLI at startup |
+
 ## MCP Server Types
 
 | Type | Config field | Description |
@@ -328,7 +376,12 @@ python3 -m pytest
 | `mcp_servers.<name>.enabled` | `true` | Enable/disable server |
 | `mcp_servers.<name>.command` | — | Command list (stdio only) |
 | `mcp_servers.<name>.url` | — | Endpoint URL (sse/http only) |
+| `backend` | `ollama` | Chat backend: `ollama` or `vllm` |
+| `vllm.base_url` | `http://localhost:8000` | vLLM API endpoint |
+| `vllm.default_model` | — | Model name served by vLLM |
+| `vllm.timeout` | `120` | Request timeout in seconds |
 | `rag.enabled` | `false` | Enable RAG retrieval |
+| `rag.embed_backend` | `ollama` | Embedding backend: `ollama` or `vllm` |
 | `rag.embed_model` | `nomic-embed-text` | Ollama embedding model |
 | `rag.db_path` | `data/chroma` | ChromaDB persistence directory |
 | `rag.top_k` | `5` | Number of chunks to retrieve per query |
