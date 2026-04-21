@@ -16,6 +16,13 @@ def rag_cfg(tmp_path):
 
 
 @pytest.fixture
+def mock_embed_backend():
+    backend = MagicMock()
+    backend.embed = AsyncMock(return_value=[0.1] * 768)
+    return backend
+
+
+@pytest.fixture
 def mock_chroma(monkeypatch):
     """Patch chromadb.PersistentClient to return a mock."""
     col = MagicMock()
@@ -35,9 +42,9 @@ def mock_chroma(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_ingest_text(rag_cfg, mock_chroma):
+async def test_ingest_text(rag_cfg, mock_chroma, mock_embed_backend):
     client, col = mock_chroma
-    manager = RagManager(rag_cfg)
+    manager = RagManager(rag_cfg, mock_embed_backend)
 
     with patch.object(manager, "_embed", new=AsyncMock(return_value=[0.1] * 768)):
         count = await manager.ingest("mycol", "test.txt", "Hello world " * 100)
@@ -47,10 +54,10 @@ async def test_ingest_text(rag_cfg, mock_chroma):
 
 
 @pytest.mark.asyncio
-async def test_ingest_skips_duplicate(rag_cfg, mock_chroma):
+async def test_ingest_skips_duplicate(rag_cfg, mock_chroma, mock_embed_backend):
     client, col = mock_chroma
-    col.get.return_value = {"ids": ["existing-id"]}  # source already present
-    manager = RagManager(rag_cfg)
+    col.get.return_value = {"ids": ["existing-id"]}
+    manager = RagManager(rag_cfg, mock_embed_backend)
 
     with patch.object(manager, "_embed", new=AsyncMock(return_value=[0.1] * 768)):
         count = await manager.ingest("mycol", "test.txt", "Hello world " * 100)
@@ -60,9 +67,9 @@ async def test_ingest_skips_duplicate(rag_cfg, mock_chroma):
 
 
 @pytest.mark.asyncio
-async def test_search_returns_chunks(rag_cfg, mock_chroma):
+async def test_search_returns_chunks(rag_cfg, mock_chroma, mock_embed_backend):
     client, col = mock_chroma
-    manager = RagManager(rag_cfg)
+    manager = RagManager(rag_cfg, mock_embed_backend)
 
     with patch.object(manager, "_embed", new=AsyncMock(return_value=[0.1] * 768)):
         chunks = await manager.search("who am I?")
@@ -73,9 +80,9 @@ async def test_search_returns_chunks(rag_cfg, mock_chroma):
 
 
 @pytest.mark.asyncio
-async def test_search_empty_when_disabled(tmp_path):
+async def test_search_empty_when_disabled(tmp_path, mock_embed_backend):
     cfg = RagConfig(enabled=False, db_path=str(tmp_path / "chroma"))
-    manager = RagManager(cfg)
+    manager = RagManager(cfg, mock_embed_backend)
     chunks = await manager.search("anything")
     assert chunks == []
 
@@ -86,7 +93,7 @@ def test_chunk_text_splits_correctly():
     chunks = chunk_text(text, size=500, overlap=50)
     assert len(chunks) == 3
     assert chunks[0] == "a" * 500
-    assert chunks[1] == "a" * 500  # starts at offset 450
+    assert chunks[1] == "a" * 500
     assert len(chunks[2]) > 0
 
 
@@ -102,8 +109,8 @@ def test_chunk_text_empty():
     assert chunks == []
 
 
-def test_list_collections(rag_cfg, mock_chroma):
+def test_list_collections(rag_cfg, mock_chroma, mock_embed_backend):
     client, col = mock_chroma
-    manager = RagManager(rag_cfg)
+    manager = RagManager(rag_cfg, mock_embed_backend)
     cols = manager.list_collections()
     assert isinstance(cols, list)

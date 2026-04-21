@@ -1,13 +1,15 @@
-"""RAG module: ChromaDB-backed vector store with Ollama embeddings."""
+"""RAG module: ChromaDB-backed vector store with pluggable embedding backend."""
 
 import hashlib
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import chromadb
-import ollama
 
 from config import RagConfig
+
+if TYPE_CHECKING:
+    from llm_backend import LLMBackend
 
 logger = logging.getLogger(__name__)
 
@@ -28,25 +30,21 @@ def chunk_text(text: str, size: int = 500, overlap: int = 50) -> list[str]:
 
 
 class RagManager:
-    """Manages document ingestion and retrieval using ChromaDB + Ollama embeddings."""
+    """Manages document ingestion and retrieval using ChromaDB + a pluggable embedding backend."""
 
-    def __init__(self, cfg: RagConfig) -> None:
+    def __init__(self, cfg: RagConfig, embed_backend: "LLMBackend") -> None:
         self._cfg = cfg
+        self._embed_backend = embed_backend
         if cfg.enabled:
             try:
                 self._client = chromadb.PersistentClient(path=cfg.db_path)
             except Exception as exc:
                 logger.warning("ChromaDB unavailable, RAG disabled: %s", exc)
                 self._cfg = RagConfig(enabled=False)
-        self._ollama = ollama.AsyncClient()
 
     async def _embed(self, text: str) -> list[float]:
-        """Return embedding vector for *text* using the configured embed model."""
-        response = await self._ollama.embed(
-            model=self._cfg.embed_model,
-            input=text,
-        )
-        return response.embeddings[0]
+        """Return embedding vector for *text* using the configured embed backend."""
+        return await self._embed_backend.embed(self._cfg.embed_model, text)
 
     def _get_collection(self, name: str) -> Any:
         return self._client.get_or_create_collection(
@@ -134,7 +132,7 @@ class RagManager:
                 results["metadatas"][0],
                 results["distances"][0],
             ):
-                similarity = 1.0 - dist  # cosine distance → similarity
+                similarity = 1.0 - dist
                 if similarity >= self._cfg.similarity_threshold:
                     label = f"[source: {meta['source']}, chunk {meta['chunk_index']}]"
                     all_results.append((similarity, f"{label}\n{doc}"))
