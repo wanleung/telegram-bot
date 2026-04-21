@@ -1,7 +1,8 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from agent import Agent, MAX_ITERATIONS, _parse_text_tool_calls
+from agent import Agent, MAX_ITERATIONS
 from config import Config, TelegramConfig, OllamaConfig, HistoryConfig
+from llm_backend import ChatResponse, ToolCall
 
 
 def _make_config(tmp_path) -> Config:
@@ -12,21 +13,20 @@ def _make_config(tmp_path) -> Config:
     )
 
 
-def _make_response(content: str | None = None, tool_calls=None):
-    msg = MagicMock()
-    msg.content = content
-    msg.tool_calls = tool_calls or []
-    resp = MagicMock()
-    resp.message = msg
-    return resp
-
-
-def _make_tool_call(name: str, arguments: dict):
-    tc = MagicMock()
-    tc.function.name = name
-    tc.function.arguments = arguments
-    tc.model_dump.return_value = {"function": {"name": name, "arguments": arguments}}
-    return tc
+def _make_backend(content: str = "Hello!", tool_calls: list | None = None):
+    """Return a mock LLMBackend with chat returning the given ChatResponse."""
+    backend = MagicMock()
+    response = ChatResponse(
+        content=content,
+        tool_calls=tool_calls or [],
+        raw_assistant_message={"role": "assistant", "content": content},
+    )
+    backend.chat = AsyncMock(return_value=response)
+    backend.list_models = AsyncMock(return_value=[])
+    backend.format_tool_result = MagicMock(
+        return_value={"role": "tool", "content": "tool result", "tool_name": "mock_tool"}
+    )
+    return backend
 
 
 @pytest.mark.asyncio
@@ -34,11 +34,11 @@ async def test_simple_text_response(tmp_path):
     cfg = _make_config(tmp_path)
     mcp = MagicMock()
     mcp.get_tool_definitions.return_value = []
-    agent = Agent(cfg, mcp)
+    backend = _make_backend(content="Hello!")
+    agent = Agent(backend, "llama3.2", cfg, mcp)
 
     with patch("agent.get_history", return_value=[]), \
-         patch("agent.save_messages") as mock_save, \
-         patch.object(agent._client, "chat", return_value=_make_response(content="Hello!")):
+         patch("agent.save_messages") as mock_save:
         result = await agent.run(chat_id=1, user_message="Hi")
 
     assert result == "Hello!"
@@ -58,25 +58,33 @@ async def test_tool_call_then_text_response(tmp_path):
         {"type": "function", "function": {"name": "search_web"}}
     ]
     mcp.call_tool = AsyncMock(return_value="Search result: Python docs")
-    agent = Agent(cfg, mcp)
 
-    tc = _make_tool_call("search_web", {"query": "python"})
-    tool_response = _make_response(content="", tool_calls=[tc])
-    final_response = _make_response(content="Here is what I found.")
+    tc = ToolCall(name="search_web", arguments={"query": "python"})
+    tool_response = ChatResponse(
+        content="",
+        tool_calls=[tc],
+        raw_assistant_message={"role": "assistant", "content": "", "tool_calls": []},
+    )
+    final_response = ChatResponse(content="Here is what I found.")
+
+    backend = MagicMock()
+    backend.chat = AsyncMock(side_effect=[tool_response, final_response])
+    backend.format_tool_result = MagicMock(
+        return_value={"role": "tool", "content": "Search result: Python docs", "tool_name": "search_web"}
+    )
+    agent = Agent(backend, "llama3.2", cfg, mcp)
 
     with patch("agent.get_history", return_value=[]), \
          patch("agent.save_messages"), \
-         patch.object(agent._client, "chat", side_effect=[tool_response, final_response]) as mock_chat:
+         patch("agent.save_messages"):
         result = await agent.run(chat_id=1, user_message="Search python")
 
     assert result == "Here is what I found."
     mcp.call_tool.assert_called_once_with("search_web", {"query": "python"})
 
-    # Check the second chat() call contains a tool message with the correct structure
-    second_call_messages = mock_chat.call_args_list[1][1]["messages"]
+    second_call_messages = backend.chat.call_args_list[1][1]["messages"]
     tool_messages = [m for m in second_call_messages if m.get("role") == "tool"]
     assert len(tool_messages) >= 1
-    assert "tool_name" in tool_messages[0]
     assert tool_messages[0]["tool_name"] == "search_web"
 
 
@@ -86,14 +94,22 @@ async def test_max_iterations_guard(tmp_path):
     mcp = MagicMock()
     mcp.get_tool_definitions.return_value = []
     mcp.call_tool = AsyncMock(return_value="result")
-    agent = Agent(cfg, mcp)
 
-    tc = _make_tool_call("loop_tool", {})
-    always_tool = _make_response(content="", tool_calls=[tc])
+    tc = ToolCall(name="loop_tool", arguments={})
+    always_tool = ChatResponse(
+        content="",
+        tool_calls=[tc],
+        raw_assistant_message={"role": "assistant", "content": ""},
+    )
+    backend = MagicMock()
+    backend.chat = AsyncMock(return_value=always_tool)
+    backend.format_tool_result = MagicMock(
+        return_value={"role": "tool", "content": "result", "tool_name": "loop_tool"}
+    )
+    agent = Agent(backend, "llama3.2", cfg, mcp)
 
     with patch("agent.get_history", return_value=[]), \
-         patch("agent.save_messages") as mock_save, \
-         patch.object(agent._client, "chat", return_value=always_tool):
+         patch("agent.save_messages") as mock_save:
         result = await agent.run(chat_id=1, user_message="loop")
 
     assert "maximum" in result.lower()
@@ -103,26 +119,29 @@ async def test_max_iterations_guard(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_ollama_error_returns_error_message(tmp_path):
+async def test_backend_error_returns_error_message(tmp_path):
     cfg = _make_config(tmp_path)
     mcp = MagicMock()
     mcp.get_tool_definitions.return_value = []
-    agent = Agent(cfg, mcp)
+
+    backend = MagicMock()
+    backend.chat = AsyncMock(side_effect=Exception("connection refused"))
+    agent = Agent(backend, "llama3.2", cfg, mcp)
 
     with patch("agent.get_history", return_value=[]), \
-         patch("agent.save_messages"), \
-         patch.object(agent._client, "chat", side_effect=Exception("connection refused")):
+         patch("agent.save_messages"):
         result = await agent.run(chat_id=1, user_message="Hi")
 
-    assert "Ollama error" in result
+    assert "error" in result.lower()
 
 
 @pytest.mark.asyncio
-async def test_history_passed_to_ollama(tmp_path):
+async def test_history_passed_to_backend(tmp_path):
     cfg = _make_config(tmp_path)
     mcp = MagicMock()
     mcp.get_tool_definitions.return_value = []
-    agent = Agent(cfg, mcp)
+    backend = _make_backend(content="ok")
+    agent = Agent(backend, "llama3.2", cfg, mcp)
 
     existing_history = [
         {"role": "user", "content": "prev question"},
@@ -130,11 +149,10 @@ async def test_history_passed_to_ollama(tmp_path):
     ]
 
     with patch("agent.get_history", return_value=existing_history), \
-         patch("agent.save_messages"), \
-         patch.object(agent._client, "chat", return_value=_make_response(content="ok")) as mock_chat:
+         patch("agent.save_messages"):
         await agent.run(chat_id=1, user_message="new question")
 
-    sent_messages = mock_chat.call_args[1]["messages"]
+    sent_messages = backend.chat.call_args[1]["messages"]
     assert sent_messages[0] == {"role": "user", "content": "prev question"}
     assert sent_messages[-1] == {"role": "user", "content": "new question"}
 
@@ -142,59 +160,40 @@ async def test_history_passed_to_ollama(tmp_path):
 def test_set_model_changes_active_model(tmp_path):
     cfg = _make_config(tmp_path)
     mcp = MagicMock()
-    agent = Agent(cfg, mcp)
+    backend = _make_backend()
+    agent = Agent(backend, "llama3.2", cfg, mcp)
     assert agent.active_model == "llama3.2"
     agent.set_model("mistral")
     assert agent.active_model == "mistral"
 
 
 @pytest.mark.asyncio
-async def test_list_models_returns_sorted_names(tmp_path):
+async def test_list_models_delegates_to_backend(tmp_path):
     cfg = _make_config(tmp_path)
     mcp = MagicMock()
-    agent = Agent(cfg, mcp)
-
-    m1, m2 = MagicMock(), MagicMock()
-    m1.model = "llava"
-    m2.model = "llama3.2"
-    list_response = MagicMock()
-    list_response.models = [m1, m2]
-
-    with patch.object(agent._client, "list", return_value=list_response):
-        result = await agent.list_models()
-
+    backend = MagicMock()
+    backend.list_models = AsyncMock(return_value=["llama3.2", "llava"])
+    agent = Agent(backend, "llama3.2", cfg, mcp)
+    result = await agent.list_models()
     assert result == ["llama3.2", "llava"]
 
 
 @pytest.mark.asyncio
-async def test_list_models_returns_empty_on_error(tmp_path):
-    cfg = _make_config(tmp_path)
-    mcp = MagicMock()
-    agent = Agent(cfg, mcp)
-
-    with patch.object(agent._client, "list", side_effect=Exception("connection refused")):
-        result = await agent.list_models()
-
-    assert result == []
-
-
-@pytest.mark.asyncio
-async def test_image_passed_to_ollama(tmp_path):
-    """Images are forwarded to ollama chat as base64 strings."""
+async def test_image_passed_to_backend(tmp_path):
     cfg = _make_config(tmp_path)
     mcp = MagicMock()
     mcp.get_tool_definitions.return_value = []
-    agent = Agent(cfg, mcp)
+    backend = _make_backend(content="Nice image!")
+    agent = Agent(backend, "llama3.2", cfg, mcp)
 
-    fake_b64 = "aGVsbG8="  # base64("hello")
+    fake_b64 = "aGVsbG8="
 
     with patch("agent.get_history", return_value=[]), \
-         patch("agent.save_messages"), \
-         patch.object(agent._client, "chat", return_value=_make_response(content="Nice image!")) as mock_chat:
+         patch("agent.save_messages"):
         result = await agent.run(chat_id=1, user_message="What is this?", images=[fake_b64])
 
     assert result == "Nice image!"
-    sent = mock_chat.call_args[1]["messages"]
+    sent = backend.chat.call_args[1]["messages"]
     user_msg = next(m for m in sent if m["role"] == "user")
     assert user_msg["images"] == [fake_b64]
     assert user_msg["content"] == "What is this?"
@@ -202,15 +201,14 @@ async def test_image_passed_to_ollama(tmp_path):
 
 @pytest.mark.asyncio
 async def test_image_stored_as_placeholder_in_history(tmp_path):
-    """Images are stored in history as '[image] <caption>' not raw base64."""
     cfg = _make_config(tmp_path)
     mcp = MagicMock()
     mcp.get_tool_definitions.return_value = []
-    agent = Agent(cfg, mcp)
+    backend = _make_backend(content="ok")
+    agent = Agent(backend, "llama3.2", cfg, mcp)
 
     with patch("agent.get_history", return_value=[]), \
-         patch("agent.save_messages") as mock_save, \
-         patch.object(agent._client, "chat", return_value=_make_response(content="ok")):
+         patch("agent.save_messages") as mock_save:
         await agent.run(chat_id=1, user_message="describe it", images=["aGVsbG8="])
 
     saved = mock_save.call_args[0][2]
@@ -220,90 +218,45 @@ async def test_image_stored_as_placeholder_in_history(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_no_image_message_unaffected(tmp_path):
-    """Plain text messages without images work exactly as before."""
-    cfg = _make_config(tmp_path)
-    mcp = MagicMock()
-    mcp.get_tool_definitions.return_value = []
-    agent = Agent(cfg, mcp)
-
-    with patch("agent.get_history", return_value=[]), \
-         patch("agent.save_messages") as mock_save, \
-         patch.object(agent._client, "chat", return_value=_make_response(content="pong")):
-        result = await agent.run(chat_id=1, user_message="ping")
-
-    assert result == "pong"
-    saved = mock_save.call_args[0][2]
-    assert saved[0] == {"role": "user", "content": "ping"}
-
-
-@pytest.mark.asyncio
 async def test_empty_content_response(tmp_path):
     cfg = _make_config(tmp_path)
     mcp = MagicMock()
     mcp.get_tool_definitions.return_value = []
-    agent = Agent(cfg, mcp)
+    backend = _make_backend(content="")
+    agent = Agent(backend, "llama3.2", cfg, mcp)
 
     with patch("agent.get_history", return_value=[]), \
-         patch("agent.save_messages"), \
-         patch.object(agent._client, "chat", return_value=_make_response(content=None)):
+         patch("agent.save_messages"):
         result = await agent.run(chat_id=1, user_message="Hi")
 
-    assert result == ""  # agent returns empty; bot.py guards with fallback
-
-
-# --- Text tool-call format (fallback parser) ---
-
-def test_parse_text_tool_calls_python_tags():
-    """Parses <|python_start|>...<|python_end|> format."""
-    content = '<|python_start|>{"type": "function", "name": "get_status", "parameters": {}}<|python_end|>'
-    calls = _parse_text_tool_calls(content)
-    assert calls == [{"name": "get_status", "arguments": {}}]
-
-
-def test_parse_text_tool_calls_with_arguments():
-    """Parses tool calls that include parameters."""
-    content = '<|python_start|>{"name": "search", "parameters": {"query": "python"}}<|python_end|>'
-    calls = _parse_text_tool_calls(content)
-    assert calls == [{"name": "search", "arguments": {"query": "python"}}]
-
-
-def test_parse_text_tool_calls_no_match():
-    """Returns None for plain text with no tool-call markers."""
-    assert _parse_text_tool_calls("Hello, how can I help?") is None
-
-
-def test_parse_text_tool_calls_multiple():
-    """Parses multiple tool calls in one message."""
-    content = (
-        '<|python_start|>{"name": "tool_a", "parameters": {}}<|python_end|>'
-        '<|python_start|>{"name": "tool_b", "parameters": {"x": 1}}<|python_end|>'
-    )
-    calls = _parse_text_tool_calls(content)
-    assert len(calls) == 2
-    assert calls[0]["name"] == "tool_a"
-    assert calls[1] == {"name": "tool_b", "arguments": {"x": 1}}
+    assert result == ""
 
 
 @pytest.mark.asyncio
 async def test_text_tool_call_fallback_executed(tmp_path):
-    """Agent executes tool calls embedded as text when msg.tool_calls is empty."""
+    """Agent executes tool calls present in ChatResponse regardless of their source."""
     cfg = _make_config(tmp_path)
     mcp = MagicMock()
-    mcp.get_tool_definitions.return_value = [
-        {"type": "function", "function": {"name": "get_status"}}
-    ]
+    mcp.get_tool_definitions.return_value = []
     mcp.call_tool = AsyncMock(return_value="All lines good")
-    agent = Agent(cfg, mcp)
 
-    text_tool_response = _make_response(
-        content='<|python_start|>{"type": "function", "name": "get_status", "parameters": {}}<|python_end|>'
+    tc = ToolCall(name="get_status", arguments={})
+    tool_response = ChatResponse(
+        content="",
+        tool_calls=[tc],
+        raw_assistant_message={"role": "assistant", "content": ""},
     )
-    final_response = _make_response(content="All lines are running normally.")
+    final_response = ChatResponse(content="All lines are running normally.")
+
+    backend = MagicMock()
+    backend.chat = AsyncMock(side_effect=[tool_response, final_response])
+    backend.format_tool_result = MagicMock(
+        return_value={"role": "tool", "content": "All lines good", "tool_name": "get_status"}
+    )
+    agent = Agent(backend, "llama3.2", cfg, mcp)
 
     with patch("agent.get_history", return_value=[]), \
-         patch("agent.save_messages"), \
-         patch.object(agent._client, "chat", side_effect=[text_tool_response, final_response]):
+         patch("agent.save_messages"):
         result = await agent.run(chat_id=1, user_message="list line status")
 
     assert result == "All lines are running normally."
