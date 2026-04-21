@@ -1,5 +1,6 @@
 python-telegram-bot==21.*
 ollama
+openai>=1.0
 mcp[cli]
 aiosqlite
 pydantic>=2.0

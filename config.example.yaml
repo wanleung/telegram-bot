@@ -1,10 +1,19 @@
 telegram:
   token: "${TELEGRAM_TOKEN}"   # export TELEGRAM_TOKEN=your-token-here
 
+# Chat backend: ollama (default) or vllm
+backend: ollama
+
 ollama:
   base_url: "http://localhost:11434"
   default_model: "llama3.2"
   timeout: 120
+
+# vLLM backend (local or network). Required when backend: vllm or rag.embed_backend: vllm
+# vllm:
+#   base_url: "http://localhost:8000"      # or http://192.168.1.50:8000
+#   default_model: "meta-llama/Llama-3.2-3B-Instruct"
+#   timeout: 120
 
 history:
   max_messages: 50
@@ -12,6 +21,7 @@ history:
 
 rag:
   enabled: false
+  embed_backend: ollama   # ollama or vllm (defaults to main backend if not set)
   embed_model: "nomic-embed-text"
   db_path: "data/chroma"
   top_k: 4
