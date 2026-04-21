@@ -14,6 +14,7 @@ from agent import Agent
 from utils import md_to_telegram_html
 from rag import RagManager
 from ingest import ingest_source
+from llm_backend import create_backend, create_embed_backend
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -180,7 +181,8 @@ async def _post_init(application: Application) -> None:
     await init_db(cfg.history.db_path)
     mcp: MCPManager = application.bot_data["mcp"]
     await mcp.start()
-    application.bot_data["rag"] = RagManager(cfg.rag)
+    embed_backend = create_embed_backend(cfg)
+    application.bot_data["rag"] = RagManager(cfg.rag, embed_backend)
 
 
 async def _post_shutdown(application: Application) -> None:
@@ -199,7 +201,9 @@ def main() -> None:
     cfg = load_config(config_path)
 
     mcp = MCPManager(cfg.mcp_servers)
-    agent = Agent(cfg, mcp)
+    chat_backend = create_backend(cfg)
+    initial_model = cfg.vllm.default_model if cfg.backend == "vllm" else cfg.ollama.default_model
+    agent = Agent(chat_backend, initial_model, cfg, mcp)
 
     app = (
         Application.builder()
@@ -222,7 +226,7 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.PHOTO, handle_message))
 
-    logger.info("Bot starting with model '%s'", agent.active_model)
+    logger.info("Bot starting with model '%s' via %s backend", agent.active_model, cfg.backend)
     app.run_polling(drop_pending_updates=True)
 
 
