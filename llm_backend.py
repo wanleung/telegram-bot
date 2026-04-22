@@ -130,14 +130,28 @@ class OllamaBackend:
         tools: list[dict] | None,
         think: bool = False,
     ) -> AsyncIterator[ChatResponse]:
-        """Stream chat responses from Ollama."""
-        response = await self._client.chat(
-            model=model, messages=messages, tools=tools, stream=True
-        )
-        async for chunk in response:
-            msg = chunk.message
-            content = msg.content or ""
-            yield ChatResponse(content=content)
+        """Stream chat responses from Ollama with optional thinking support.
+        
+        Args:
+            model: Model name to use.
+            messages: Chat messages.
+            tools: Ignored for streaming calls; tool detection is handled in agent.py.
+            think: Whether to enable thinking mode for models that support it.
+            
+        Yields:
+            ChatResponse chunks with content and optionally thinking text.
+        """
+        async for chunk in await self._client.chat(
+            model=model,
+            messages=messages,
+            stream=True,
+            think=think,
+        ):
+            content = chunk.message.content or ""
+            raw_thinking = getattr(chunk.message, "thinking", None)
+            thinking = raw_thinking if raw_thinking else None
+            if content or thinking:
+                yield ChatResponse(content=content, thinking=thinking)
 
     async def list_models(self) -> list[str]:
         try:
@@ -215,12 +229,15 @@ class VLLMBackend:
         kwargs: dict = {"model": model, "messages": messages, "stream": True}
         if tools:
             kwargs["tools"] = tools
-        response = await self._client.chat.completions.create(**kwargs)
-        async for chunk in response:
-            if chunk.choices:
-                delta = chunk.choices[0].delta
-                content = delta.content or ""
-                yield ChatResponse(content=content)
+        if think:
+            kwargs["extra_body"] = {"enable_thinking": True}
+
+        async for chunk in await self._client.chat.completions.create(**kwargs):
+            delta = chunk.choices[0].delta
+            content = delta.content or ""
+            thinking = getattr(delta, "reasoning_content", None) or None
+            if content or thinking:
+                yield ChatResponse(content=content, thinking=thinking)
 
     async def list_models(self) -> list[str]:
         try:
