@@ -12,13 +12,13 @@ class TelegramConfig(BaseModel):
 class OllamaConfig(BaseModel):
     base_url: str = "http://localhost:11434"
     default_model: str
-    timeout: int = 120
+    timeout: int = 300
 
 
 class VLLMConfig(BaseModel):
     base_url: str = "http://localhost:8000"
     default_model: str
-    timeout: int = 120
+    timeout: int = 300
 
 
 class HistoryConfig(BaseModel):

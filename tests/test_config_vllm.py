@@ -19,7 +19,7 @@ def test_vllm_config_parsed(tmp_path):
     assert cfg.backend == "vllm"
     assert cfg.vllm.base_url == "http://192.168.1.50:8000"
     assert cfg.vllm.default_model == "llama3"
-    assert cfg.vllm.timeout == 120
+    assert cfg.vllm.timeout == 300
 
 
 def test_backend_ollama_requires_ollama_block(tmp_path):
@@ -75,4 +75,4 @@ def test_embed_backend_defaults_to_ollama(tmp_path):
 
 def test_vllm_config_default_timeout():
     cfg = VLLMConfig(base_url="http://localhost:8000", default_model="llama3")
-    assert cfg.timeout == 120
+    assert cfg.timeout == 300

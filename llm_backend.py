@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
+import httpx
 import ollama
 import openai
 
@@ -76,7 +77,8 @@ class OllamaBackend:
     """LLM backend backed by the Ollama native API."""
 
     def __init__(self, cfg: OllamaConfig) -> None:
-        self._client = ollama.AsyncClient(host=cfg.base_url, timeout=cfg.timeout)
+        timeout = httpx.Timeout(connect=10.0, read=cfg.timeout, write=cfg.timeout, pool=10.0)
+        self._client = ollama.AsyncClient(host=cfg.base_url, timeout=timeout)
 
     async def chat(
         self, model: str, messages: list[dict], tools: list[dict] | None
