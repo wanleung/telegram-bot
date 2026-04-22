@@ -229,6 +229,30 @@ def test_vllm_format_tool_result_no_id():
     assert msg["tool_call_id"] == ""
 
 
+# --- ChatResponse.thinking ---
+
+def test_chat_response_thinking_default_none():
+    r = ChatResponse(content="hello")
+    assert r.thinking is None
+
+
+def test_chat_response_thinking_set():
+    r = ChatResponse(content="answer", thinking="I reasoned about it")
+    assert r.thinking == "I reasoned about it"
+
+
+def test_ollama_backend_has_chat_stream():
+    backend = OllamaBackend(_ollama_cfg())
+    assert hasattr(backend, "chat_stream")
+    assert callable(backend.chat_stream)
+
+
+def test_vllm_backend_has_chat_stream():
+    backend = VLLMBackend(_vllm_cfg())
+    assert hasattr(backend, "chat_stream")
+    assert callable(backend.chat_stream)
+
+
 # --- Factories ---
 
 def test_create_backend_ollama():

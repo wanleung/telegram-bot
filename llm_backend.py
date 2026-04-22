@@ -3,6 +3,7 @@
 import json
 import logging
 import re
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
@@ -58,6 +59,7 @@ class ChatResponse:
     content: str
     tool_calls: list[ToolCall] = field(default_factory=list)
     raw_assistant_message: dict = field(default_factory=dict)
+    thinking: str | None = None
 
 
 @runtime_checkable
@@ -65,6 +67,14 @@ class LLMBackend(Protocol):
     async def chat(
         self, model: str, messages: list[dict], tools: list[dict] | None
     ) -> ChatResponse: ...
+
+    def chat_stream(
+        self,
+        model: str,
+        messages: list[dict],
+        tools: list[dict] | None,
+        think: bool = False,
+    ) -> AsyncIterator[ChatResponse]: ...
 
     async def list_models(self) -> list[str]: ...
 
@@ -112,6 +122,22 @@ class OllamaBackend:
 
         raw_msg = {"role": "assistant", "content": content}
         return ChatResponse(content=content, raw_assistant_message=raw_msg)
+
+    async def chat_stream(
+        self,
+        model: str,
+        messages: list[dict],
+        tools: list[dict] | None,
+        think: bool = False,
+    ) -> AsyncIterator[ChatResponse]:
+        """Stream chat responses from Ollama."""
+        response = await self._client.chat(
+            model=model, messages=messages, tools=tools, stream=True
+        )
+        async for chunk in response:
+            msg = chunk.message
+            content = msg.content or ""
+            yield ChatResponse(content=content)
 
     async def list_models(self) -> list[str]:
         try:
@@ -177,6 +203,24 @@ class VLLMBackend:
 
         raw_msg = {"role": "assistant", "content": content}
         return ChatResponse(content=content, raw_assistant_message=raw_msg)
+
+    async def chat_stream(
+        self,
+        model: str,
+        messages: list[dict],
+        tools: list[dict] | None,
+        think: bool = False,
+    ) -> AsyncIterator[ChatResponse]:
+        """Stream chat responses from vLLM."""
+        kwargs: dict = {"model": model, "messages": messages, "stream": True}
+        if tools:
+            kwargs["tools"] = tools
+        response = await self._client.chat.completions.create(**kwargs)
+        async for chunk in response:
+            if chunk.choices:
+                delta = chunk.choices[0].delta
+                content = delta.content or ""
+                yield ChatResponse(content=content)
 
     async def list_models(self) -> list[str]:
         try:
