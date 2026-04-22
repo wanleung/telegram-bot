@@ -13,12 +13,14 @@ class OllamaConfig(BaseModel):
     base_url: str = "http://localhost:11434"
     default_model: str
     timeout: int = 300
+    think: bool = False
 
 
 class VLLMConfig(BaseModel):
     base_url: str = "http://localhost:8000"
     default_model: str
     timeout: int = 300
+    think: bool = False
 
 
 class HistoryConfig(BaseModel):

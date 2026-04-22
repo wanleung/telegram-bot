@@ -150,3 +150,15 @@ mcp_servers:
 """)
     with pytest.raises(ValidationError):
         load_config(path)
+
+
+def test_ollama_config_think_default():
+    from config import OllamaConfig
+    cfg = OllamaConfig(default_model="llama3.2")
+    assert cfg.think is False
+
+
+def test_ollama_config_think_enabled():
+    from config import OllamaConfig
+    cfg = OllamaConfig(default_model="llama3.2", think=True)
+    assert cfg.think is True

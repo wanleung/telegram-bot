@@ -76,3 +76,13 @@ def test_embed_backend_defaults_to_ollama(tmp_path):
 def test_vllm_config_default_timeout():
     cfg = VLLMConfig(base_url="http://localhost:8000", default_model="llama3")
     assert cfg.timeout == 300
+
+
+def test_vllm_config_think_default():
+    cfg = VLLMConfig(base_url="http://localhost:8000", default_model="llama3")
+    assert cfg.think is False
+
+
+def test_vllm_config_think_enabled():
+    cfg = VLLMConfig(base_url="http://localhost:8000", default_model="llama3", think=True)
+    assert cfg.think is True
