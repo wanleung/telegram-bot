@@ -5,6 +5,8 @@ A single-user Telegram bot powered by a local [Ollama](https://ollama.com) insta
 ## Features
 
 - 🤖 Chat with any locally running Ollama model
+- ⚡ **Streaming responses** — replies appear token-by-token as the model generates them
+- 🧠 **Thinking mode** — toggle chain-of-thought reasoning per chat via `/think` (shown as a spoiler)
 - 🔧 MCP tool-calling — connect stdio, SSE, and HTTP MCP servers
 - 📚 RAG — ground responses in local documents (RFCs, PDFs, web pages)
 - 🖼️ Image upload support for vision models (llava, llama3.2-vision, etc.)
@@ -72,6 +74,7 @@ ollama:
   base_url: "http://localhost:11434"
   default_model: "llama3.2"          # any model you have pulled
   timeout: 120
+  think: false                       # set true to enable thinking mode by default
 
 history:
   max_messages: 50
@@ -124,13 +127,25 @@ CONFIG_PATH=/path/to/my-config.yaml python3 bot.py
 | Command | Description |
 |---|---|
 | `/start` | Show welcome message and current model |
-| `/model <name>` | Switch to a different Ollama model |
+| `/model <name>` | Switch to a different Ollama/vLLM model |
+| `/models` | List all available models |
 | `/tools` | List all available MCP tools |
 | `/clear` | Clear conversation history for this chat |
+| `/think` | Toggle thinking mode (shows model reasoning as a spoiler) |
 | `/ingest <collection> <url-or-path>` | Ingest a document into RAG |
 | `/collections` | List all RAG collections with chunk counts |
 
-Any other text message is sent to the Ollama agent, which may use MCP tools before responding.
+Any other text message is sent to the agent, which may use MCP tools before responding.
+
+### Streaming
+
+Responses are streamed token-by-token. The bot edits a placeholder message as tokens arrive, giving instant feedback. The final edit applies full Markdown→HTML formatting.
+
+### Thinking mode
+
+Type `/think` to toggle per-chat reasoning mode. When on, the model's chain-of-thought is shown as a collapsible spoiler before the answer. Requires a model that supports thinking (e.g. DeepSeek R1, QwQ).
+
+The default can be set in `config.yaml` via `ollama.think: true` or `vllm.think: true`.
 
 You can also **send a photo** (with optional caption) — the image is forwarded directly to the Ollama model. Switch to a vision-capable model first:
 
@@ -238,6 +253,7 @@ vllm:
   # base_url: http://192.168.1.50:8000    # or any network address
   default_model: meta-llama/Llama-3.2-3B-Instruct
   timeout: 120
+  think: false                             # set true for DeepSeek R1, QwQ, etc.
 ```
 
 Set `ollama:` to `null` or remove it if you are using vLLM for both chat **and** embeddings (`rag.embed_backend: vllm`). If you keep Ollama for embeddings (the default), the `ollama:` block is still required.
@@ -284,19 +300,22 @@ All three types are supported simultaneously. Disabled servers (`enabled: false`
 
 ```
 telegram-bot/
-├── bot.py            # Telegram entry point and command handlers
-├── agent.py          # Agentic loop: history → Ollama → tools → reply
+├── bot.py            # Telegram entry point, command handlers, streaming
+├── agent.py          # Agentic loop: history → LLM → tools → reply (streaming)
 ├── mcp_manager.py    # MCP server connections and tool registry
 ├── config.py         # Pydantic config loader with env var resolution
 ├── history.py        # Async SQLite conversation history
+├── llm_backend.py    # LLM backend abstraction (Ollama + vLLM)
 ├── rag.py            # RAG retrieval logic using ChromaDB
 ├── ingest.py         # CLI for ingesting documents into RAG
 ├── config.example.yaml
 ├── requirements.txt
 └── tests/
     ├── test_agent.py
+    ├── test_bot.py
     ├── test_config.py
     ├── test_history.py
+    ├── test_llm_backend.py
     ├── test_mcp_manager.py
     ├── test_rag.py
     └── test_ingest.py
@@ -370,6 +389,7 @@ python3 -m pytest
 | `ollama.base_url` | `http://localhost:11434` | Ollama API base URL |
 | `ollama.default_model` | `llama3.2` | Model used on startup |
 | `ollama.timeout` | `120` | Request timeout in seconds |
+| `ollama.think` | `false` | Enable thinking mode by default for Ollama |
 | `history.max_messages` | `50` | Max messages kept per chat |
 | `history.db_path` | `data/history.db` | SQLite database path |
 | `mcp_servers.<name>.type` | — | `stdio`, `sse`, or `http` |
@@ -380,6 +400,7 @@ python3 -m pytest
 | `vllm.base_url` | `http://localhost:8000` | vLLM API endpoint |
 | `vllm.default_model` | — | Model name served by vLLM |
 | `vllm.timeout` | `120` | Request timeout in seconds |
+| `vllm.think` | `false` | Enable thinking mode by default for vLLM |
 | `rag.enabled` | `false` | Enable RAG retrieval |
 | `rag.embed_backend` | `ollama` | Embedding backend: `ollama` or `vllm` |
 | `rag.embed_model` | `nomic-embed-text` | Ollama embedding model |
