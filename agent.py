@@ -162,16 +162,16 @@ class Agent:
                 logger.exception("Stream error for chat_id=%s: %s", chat_id, exc)
                 yield (f"\n⚠️ Stream interrupted: {exc}", None)
                 content_buf += f"\n⚠️ Stream interrupted: {exc}"
-
-            await save_messages(
-                self._cfg.history.db_path,
-                chat_id,
-                [
-                    {"role": "user", "content": history_user_content},
-                    {"role": "assistant", "content": content_buf},
-                ],
-                self._cfg.history.max_messages,
-            )
+            finally:
+                await save_messages(
+                    self._cfg.history.db_path,
+                    chat_id,
+                    [
+                        {"role": "user", "content": history_user_content},
+                        {"role": "assistant", "content": content_buf},
+                    ],
+                    self._cfg.history.max_messages,
+                )
 
         # No tools: single streaming call, no double LLM invocation
         if not tools:

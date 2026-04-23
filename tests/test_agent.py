@@ -364,7 +364,10 @@ async def test_run_stream_tool_then_stream(tmp_path):
     # After tool call, non-streaming chat returns no tool calls → triggers streaming
     no_tool_response = ChatResponse(content="", tool_calls=[])
 
+    captured = {}
+
     async def _stream(*args, **kwargs):
+        captured["messages"] = kwargs.get("messages", args[1] if len(args) > 1 else [])
         yield ChatResponse(content="Final answer", thinking=None)
 
     backend = MagicMock()
@@ -383,6 +386,9 @@ async def test_run_stream_tool_then_stream(tmp_path):
 
     assert any(content == "Final answer" for content, _ in results)
     mcp.call_tool.assert_called_once_with("lookup", {"q": "x"})
+    tool_msgs = [m for m in captured.get("messages", []) if m.get("role") == "tool"]
+    assert len(tool_msgs) == 1
+    assert tool_msgs[0].get("tool_name") == "lookup"
 
 
 @pytest.mark.asyncio
@@ -410,3 +416,23 @@ async def test_run_stream_backend_error(tmp_path):
 
     combined = "".join(c for c, _ in results)
     assert "error" in combined.lower() or "interrupted" in combined.lower()
+
+
+@pytest.mark.asyncio
+async def test_run_stream_non_streaming_error_in_tool_loop(tmp_path):
+    """run_stream yields an error tuple when chat() raises during the tool-call loop."""
+    cfg = _make_config(tmp_path)
+    mcp = MagicMock()
+    mcp.get_tool_definitions.return_value = [{"type": "function", "function": {"name": "t"}}]
+
+    backend = MagicMock()
+    backend.chat = AsyncMock(side_effect=RuntimeError("backend unavailable"))
+    agent = Agent(backend, "llama3.2", cfg, mcp)
+
+    with patch("agent.get_history", return_value=[]), patch("agent.save_messages"):
+        results = []
+        async for chunk in agent.run_stream(chat_id=1, user_message="Hi"):
+            results.append(chunk)
+
+    combined = "".join(c for c, _ in results)
+    assert "error" in combined.lower()
