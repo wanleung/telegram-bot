@@ -154,19 +154,32 @@ async def cmd_think(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(f"Thinking mode {status}")
 
 
+TELEGRAM_LIMIT = 4096
+
+
 def _build_reply(content_buf: str, thinking_buf: str, final: bool) -> str:
     """
     Build the Telegram HTML reply string.
 
     During streaming (final=False): show raw escaped text.
     On final edit: apply markdown→HTML conversion and prepend thinking spoiler.
+    Message is guaranteed to fit within Telegram's 4096-character limit.
     """
     if final:
         formatted = md_to_telegram_html(content_buf) if content_buf else "<i>(no response)</i>"
         if thinking_buf:
-            escaped_thinking = html.escape(thinking_buf)
-            return f"<tg-spoiler>🤔 Thinking:\n{escaped_thinking}</tg-spoiler>\n\n{formatted}"
-        return formatted
+            # Reserve space for spoiler wrapper overhead (~60 chars) and the content
+            max_thinking = TELEGRAM_LIMIT - len(formatted) - 60
+            if max_thinking > 0:
+                truncated = thinking_buf[:max_thinking]
+                if len(thinking_buf) > max_thinking:
+                    truncated += "… (truncated)"
+                escaped_thinking = html.escape(truncated)
+                candidate = f"<tg-spoiler>🤔 Thinking:\n{escaped_thinking}</tg-spoiler>\n\n{formatted}"
+                if len(candidate) <= TELEGRAM_LIMIT:
+                    return candidate
+        # Thinking didn't fit or no thinking — return formatted content, truncated if needed
+        return formatted[:TELEGRAM_LIMIT]
     else:
         display = html.escape(content_buf) if content_buf else "⏳"
         if thinking_buf:
