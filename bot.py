@@ -1,8 +1,10 @@
 """Telegram bot entry point orchestrating agent interactions with MCP tools."""
 
 import base64
+import html
 import logging
 import os
+import time
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -26,21 +28,22 @@ logger = logging.getLogger(__name__)
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Handle /start command.
-    
+
     Displays welcome message with current model and available commands.
     """
     agent: Agent = context.bot_data["agent"]
     await update.message.reply_text(
         f"👋 Hello! I'm your Ollama-powered assistant.\n"
-        f"Current model: `{agent.active_model}`\n\n"
+        f"Current model: <code>{html.escape(agent.active_model)}</code>\n\n"
         f"Commands:\n"
         f"  /models — list available models\n"
-        f"  /model <name> — switch model\n"
+        f"  /model &lt;name&gt; — switch model\n"
         f"  /clear — clear conversation history\n"
         f"  /tools — list available MCP tools\n"
-        f"  /ingest <collection> <url-or-path> — add document to RAG\n"
+        f"  /think — toggle thinking mode (shows model reasoning)\n"
+        f"  /ingest &lt;collection&gt; &lt;url-or-path&gt; — add document to RAG\n"
         f"  /collections — list RAG knowledge base collections",
-        parse_mode="Markdown",
+        parse_mode="HTML",
     )
 
 
@@ -133,16 +136,60 @@ async def cmd_collections(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await update.message.reply_text(f"<b>RAG Collections:</b>\n{lines}", parse_mode="HTML")
 
 
+async def cmd_think(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Handle /think command.
+
+    Toggles thinking mode for the current chat. When on, the model's
+    reasoning is shown as a spoiler before the answer.
+    """
+    cfg = context.bot_data["config"]
+    think_state: dict[int, bool] = context.bot_data.setdefault("think_state", {})
+    chat_id = update.effective_chat.id
+
+    default_think = cfg.ollama.think if cfg.backend == "ollama" else cfg.vllm.think
+    current = think_state.get(chat_id, default_think)
+    think_state[chat_id] = not current
+    status = "ON 🧠" if not current else "OFF"
+    await update.message.reply_text(f"Thinking mode {status}")
+
+
+def _build_reply(content_buf: str, thinking_buf: str, final: bool) -> str:
+    """
+    Build the Telegram HTML reply string.
+
+    During streaming (final=False): show raw escaped text.
+    On final edit: apply markdown→HTML conversion and prepend thinking spoiler.
+    """
+    if final:
+        formatted = md_to_telegram_html(content_buf) if content_buf else "<i>(no response)</i>"
+        if thinking_buf:
+            escaped_thinking = html.escape(thinking_buf)
+            return f"<tg-spoiler>🤔 Thinking:\n{escaped_thinking}</tg-spoiler>\n\n{formatted}"
+        return formatted
+    else:
+        display = html.escape(content_buf) if content_buf else "⏳"
+        if thinking_buf:
+            return f"<tg-spoiler>🤔 Thinking…</tg-spoiler>\n\n{display}"
+        return display
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Handle user text messages and photo uploads.
 
     Searches the RAG knowledge base and injects relevant context into the
-    agent prompt before calling Ollama.
+    agent prompt. Streams the final LLM response, editing a placeholder
+    message every ≥0.5 s as tokens arrive.
     """
     agent: Agent = context.bot_data["agent"]
     rag: RagManager = context.bot_data["rag"]
-    thinking = await update.message.reply_text("⏳ Thinking…")
+    cfg = context.bot_data["config"]
+    think_state: dict[int, bool] = context.bot_data.setdefault("think_state", {})
+
+    chat_id = update.effective_chat.id
+    default_think = cfg.ollama.think if cfg.backend == "ollama" else cfg.vllm.think
+    think = think_state.get(chat_id, default_think)
 
     images: list[str] | None = None
     user_text = update.message.text or update.message.caption or ""
@@ -163,15 +210,40 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         except Exception as exc:
             logger.warning("RAG search failed, continuing without context: %s", exc)
 
-    reply = await agent.run(
-        chat_id=update.effective_chat.id,
-        user_message=user_text,
-        images=images,
-        context=rag_context,
-    )
-    formatted = md_to_telegram_html(reply) if reply else "_(no response)_"
-    parse_mode = "HTML" if reply else "Markdown"
-    await thinking.edit_text(formatted, parse_mode=parse_mode)
+    await update.message.chat.send_action("typing")
+    placeholder = await update.message.reply_text("⏳")
+
+    content_buf = ""
+    thinking_buf = ""
+    last_edit: float = 0.0
+
+    try:
+        async for content_chunk, thinking_chunk in agent.run_stream(
+            chat_id=chat_id,
+            user_message=user_text,
+            images=images,
+            context=rag_context,
+            think=think,
+        ):
+            if thinking_chunk:
+                thinking_buf += thinking_chunk
+            if content_chunk:
+                content_buf += content_chunk
+
+            now = time.monotonic()
+            if now - last_edit >= 0.5:
+                text = _build_reply(content_buf, thinking_buf if think else "", final=False)
+                try:
+                    await placeholder.edit_text(text, parse_mode="HTML")
+                    last_edit = now
+                except Exception:
+                    pass  # ignore edit errors during streaming (e.g. message not modified)
+    except Exception as exc:
+        logger.exception("Streaming error for chat_id=%s: %s", chat_id, exc)
+        content_buf += f"\n⚠️ Stream error: {exc}"
+
+    final_text = _build_reply(content_buf, thinking_buf if think else "", final=True)
+    await placeholder.edit_text(final_text, parse_mode="HTML")
 
 
 async def _post_init(application: Application) -> None:
@@ -223,6 +295,7 @@ def main() -> None:
     app.add_handler(CommandHandler("tools", cmd_tools))
     app.add_handler(CommandHandler("ingest", cmd_ingest))
     app.add_handler(CommandHandler("collections", cmd_collections))
+    app.add_handler(CommandHandler("think", cmd_think))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.PHOTO, handle_message))
 
