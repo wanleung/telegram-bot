@@ -233,9 +233,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             now = time.monotonic()
             if now - last_edit >= 0.5:
                 text = _build_reply(content_buf, thinking_buf if think else "", final=False)
+                last_edit = now  # always advance, regardless of edit success
                 try:
                     await placeholder.edit_text(text, parse_mode="HTML")
-                    last_edit = now
                 except Exception:
                     pass  # ignore edit errors during streaming (e.g. message not modified)
     except Exception as exc:
@@ -243,7 +243,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         content_buf += f"\n⚠️ Stream error: {exc}"
 
     final_text = _build_reply(content_buf, thinking_buf if think else "", final=True)
-    await placeholder.edit_text(final_text, parse_mode="HTML")
+    try:
+        await placeholder.edit_text(final_text, parse_mode="HTML")
+    except Exception as exc:
+        logger.error("Failed to send final reply for chat_id=%s: %s", chat_id, exc)
+        try:
+            await placeholder.edit_text(content_buf or "⚠️ (response rendering failed)")
+        except Exception:
+            pass
 
 
 async def _post_init(application: Application) -> None:
