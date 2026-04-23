@@ -141,15 +141,12 @@ class OllamaBackend:
         Yields:
             ChatResponse chunks with content and optionally thinking text.
         """
-        async for chunk in await self._client.chat(
-            model=model,
-            messages=messages,
-            stream=True,
-            think=think,
-        ):
+        kwargs = dict(model=model, messages=messages, stream=True)
+        if think:
+            kwargs["think"] = True
+        async for chunk in await self._client.chat(**kwargs):
             content = chunk.message.content or ""
-            raw_thinking = getattr(chunk.message, "thinking", None)
-            thinking = raw_thinking if raw_thinking else None
+            thinking = getattr(chunk.message, "thinking", None) or None
             if content or thinking:
                 yield ChatResponse(content=content, thinking=thinking)
 
@@ -225,7 +222,17 @@ class VLLMBackend:
         tools: list[dict] | None,
         think: bool = False,
     ) -> AsyncIterator[ChatResponse]:
-        """Stream chat responses from vLLM."""
+        """Stream chat responses from vLLM with optional thinking support.
+
+        Args:
+            model: Model name to use.
+            messages: Chat messages.
+            tools: Forwarded to the completions endpoint when provided.
+            think: When True, passes extra_body={"enable_thinking": True}.
+
+        Yields:
+            ChatResponse chunks with content and optionally thinking text.
+        """
         kwargs: dict = {"model": model, "messages": messages, "stream": True}
         if tools:
             kwargs["tools"] = tools
@@ -233,6 +240,8 @@ class VLLMBackend:
             kwargs["extra_body"] = {"enable_thinking": True}
 
         async for chunk in await self._client.chat.completions.create(**kwargs):
+            if not chunk.choices:      # skip usage-only / keepalive chunks
+                continue
             delta = chunk.choices[0].delta
             content = delta.content or ""
             thinking = getattr(delta, "reasoning_content", None) or None

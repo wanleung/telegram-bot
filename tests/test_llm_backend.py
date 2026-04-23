@@ -401,6 +401,70 @@ async def test_ollama_backend_chat_stream_passes_think_flag():
             pass
 
 
+@pytest.mark.asyncio
+async def test_vllm_backend_chat_stream_skips_empty_choices_chunk():
+    """Chunks with choices=[] (e.g. usage-only final chunk) must not raise IndexError."""
+    backend = VLLMBackend(_vllm_cfg())
+
+    def _make_chunk(text=None, empty=False):
+        chunk = MagicMock()
+        chunk.choices = [] if empty else [MagicMock()]
+        if not empty:
+            chunk.choices[0].delta.content = text or ""
+            chunk.choices[0].delta.reasoning_content = None
+        return chunk
+
+    async def _fake_stream(*args, **kwargs):
+        yield _make_chunk(text="Hello")
+        yield _make_chunk(empty=True)   # usage-only chunk — must not crash
+
+    with patch.object(backend._client.chat.completions, "create", new=AsyncMock(return_value=_fake_stream())):
+        chunks = [cr async for cr in backend.chat_stream("llama3", [], None)]
+
+    assert len(chunks) == 1
+    assert chunks[0].content == "Hello"
+
+
+@pytest.mark.asyncio
+async def test_vllm_backend_chat_stream_no_extra_body_when_think_false():
+    """When think=False (default), extra_body must not be included."""
+    backend = VLLMBackend(_vllm_cfg())
+    captured_kwargs = {}
+
+    async def _fake_stream(*args, **kwargs):
+        captured_kwargs.update(kwargs)
+        chunk = MagicMock()
+        chunk.choices[0].delta.content = "ok"
+        chunk.choices[0].delta.reasoning_content = None
+        yield chunk
+
+    with patch.object(backend._client.chat.completions, "create", new=AsyncMock(return_value=_fake_stream())):
+        async for _ in backend.chat_stream("llama3", [], None, think=False):
+            pass
+
+    assert "extra_body" not in captured_kwargs
+
+
+@pytest.mark.asyncio
+async def test_ollama_backend_chat_stream_no_think_kwarg_when_false():
+    """When think=False (default), think kwarg must not be sent to client."""
+    backend = OllamaBackend(_ollama_cfg())
+    captured_kwargs = {}
+
+    async def _fake_stream(*args, **kwargs):
+        captured_kwargs.update(kwargs)
+        chunk = MagicMock()
+        chunk.message.content = "ok"
+        chunk.message.thinking = None
+        yield chunk
+
+    with patch.object(backend._client, "chat", side_effect=_fake_stream):
+        async for _ in backend.chat_stream("llama3.2", [], None, think=False):
+            pass
+
+    assert "think" not in captured_kwargs
+
+
 # --- Factories ---
 
 def test_create_backend_ollama():
