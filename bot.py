@@ -228,7 +228,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     content_buf = ""
     thinking_buf = ""
-    last_edit: float = 0.0
+    last_edit: float = time.monotonic()  # delay first edit by 0.5s
+    last_sent_text: str = "⏳"
 
     try:
         async for content_chunk, thinking_chunk in agent.run_stream(
@@ -247,6 +248,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             if now - last_edit >= 0.5:
                 text = _build_reply(content_buf, thinking_buf if think else "", final=False)
                 last_edit = now  # always advance, regardless of edit success
+                if text == last_sent_text:
+                    continue  # skip identical content to avoid "message not modified" 400
+                last_sent_text = text
                 try:
                     await placeholder.edit_text(text, parse_mode="HTML")
                 except Exception:
