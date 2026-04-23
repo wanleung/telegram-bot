@@ -261,3 +261,152 @@ async def test_text_tool_call_fallback_executed(tmp_path):
 
     assert result == "All lines are running normally."
     mcp.call_tool.assert_called_once_with("get_status", {})
+
+
+def _make_streaming_backend(chunks: list[tuple[str, str | None]]):
+    """
+    Return a mock LLMBackend whose chat_stream yields ChatResponse chunks.
+    chunks is a list of (content, thinking) pairs.
+    """
+    backend = MagicMock()
+    # non-streaming chat returns no tool calls (so run_stream goes straight to streaming)
+    backend.chat = AsyncMock(return_value=ChatResponse(content="", tool_calls=[]))
+
+    async def _stream(*args, **kwargs):
+        for content, thinking in chunks:
+            yield ChatResponse(content=content, thinking=thinking)
+
+    backend.chat_stream = _stream
+    backend.format_tool_result = MagicMock(
+        return_value={"role": "tool", "content": "result", "tool_name": "mock"}
+    )
+    return backend
+
+
+@pytest.mark.asyncio
+async def test_run_stream_yields_content_chunks(tmp_path):
+    """run_stream yields (content, None) tuples for plain text responses."""
+    cfg = _make_config(tmp_path)
+    mcp = MagicMock()
+    mcp.get_tool_definitions.return_value = []
+
+    backend = _make_streaming_backend([("Hello", None), (" world", None)])
+    agent = Agent(backend, "llama3.2", cfg, mcp)
+
+    with patch("agent.get_history", return_value=[]), \
+         patch("agent.save_messages"):
+        results = []
+        async for content_chunk, thinking_chunk in agent.run_stream(
+            chat_id=1, user_message="Hi"
+        ):
+            results.append((content_chunk, thinking_chunk))
+
+    assert results == [("Hello", None), (" world", None)]
+
+
+@pytest.mark.asyncio
+async def test_run_stream_yields_thinking_chunks(tmp_path):
+    """run_stream yields ("", thinking) tuples for thinking fragments."""
+    cfg = _make_config(tmp_path)
+    mcp = MagicMock()
+    mcp.get_tool_definitions.return_value = []
+
+    backend = _make_streaming_backend([("", "I think..."), ("Answer", None)])
+    agent = Agent(backend, "llama3.2", cfg, mcp)
+
+    with patch("agent.get_history", return_value=[]), \
+         patch("agent.save_messages"):
+        results = []
+        async for content_chunk, thinking_chunk in agent.run_stream(
+            chat_id=1, user_message="Hi", think=True
+        ):
+            results.append((content_chunk, thinking_chunk))
+
+    assert ("", "I think...") in results
+    assert ("Answer", None) in results
+
+
+@pytest.mark.asyncio
+async def test_run_stream_saves_history(tmp_path):
+    """run_stream saves accumulated content to history after streaming completes."""
+    cfg = _make_config(tmp_path)
+    mcp = MagicMock()
+    mcp.get_tool_definitions.return_value = []
+
+    backend = _make_streaming_backend([("Hello", None), (" there", None)])
+    agent = Agent(backend, "llama3.2", cfg, mcp)
+
+    with patch("agent.get_history", return_value=[]), \
+         patch("agent.save_messages") as mock_save:
+        async for _ in agent.run_stream(chat_id=1, user_message="Hi"):
+            pass
+
+    mock_save.assert_called_once()
+    saved = mock_save.call_args[0][2]
+    assert saved[0] == {"role": "user", "content": "Hi"}
+    assert saved[1] == {"role": "assistant", "content": "Hello there"}
+
+
+@pytest.mark.asyncio
+async def test_run_stream_tool_then_stream(tmp_path):
+    """run_stream uses non-streaming chat for tool calls, then streams final response."""
+    cfg = _make_config(tmp_path)
+    mcp = MagicMock()
+    mcp.get_tool_definitions.return_value = [{"type": "function", "function": {"name": "lookup"}}]
+    mcp.call_tool = AsyncMock(return_value="tool result")
+
+    tc = ToolCall(name="lookup", arguments={"q": "x"})
+    tool_response = ChatResponse(
+        content="",
+        tool_calls=[tc],
+        raw_assistant_message={"role": "assistant", "content": ""},
+    )
+    # After tool call, non-streaming chat returns no tool calls → triggers streaming
+    no_tool_response = ChatResponse(content="", tool_calls=[])
+
+    async def _stream(*args, **kwargs):
+        yield ChatResponse(content="Final answer", thinking=None)
+
+    backend = MagicMock()
+    backend.chat = AsyncMock(side_effect=[tool_response, no_tool_response])
+    backend.chat_stream = _stream
+    backend.format_tool_result = MagicMock(
+        return_value={"role": "tool", "content": "tool result", "tool_name": "lookup"}
+    )
+    agent = Agent(backend, "llama3.2", cfg, mcp)
+
+    with patch("agent.get_history", return_value=[]), \
+         patch("agent.save_messages"):
+        results = []
+        async for chunk in agent.run_stream(chat_id=1, user_message="look up x"):
+            results.append(chunk)
+
+    assert any(content == "Final answer" for content, _ in results)
+    mcp.call_tool.assert_called_once_with("lookup", {"q": "x"})
+
+
+@pytest.mark.asyncio
+async def test_run_stream_backend_error(tmp_path):
+    """run_stream yields an error tuple when the streaming backend raises."""
+    cfg = _make_config(tmp_path)
+    mcp = MagicMock()
+    mcp.get_tool_definitions.return_value = []
+
+    backend = MagicMock()
+    backend.chat = AsyncMock(return_value=ChatResponse(content="", tool_calls=[]))
+
+    async def _stream(*args, **kwargs):
+        raise RuntimeError("connection dropped")
+        yield  # make it an async generator
+
+    backend.chat_stream = _stream
+    agent = Agent(backend, "llama3.2", cfg, mcp)
+
+    with patch("agent.get_history", return_value=[]), \
+         patch("agent.save_messages"):
+        results = []
+        async for chunk in agent.run_stream(chat_id=1, user_message="Hi"):
+            results.append(chunk)
+
+    combined = "".join(c for c, _ in results)
+    assert "error" in combined.lower() or "interrupted" in combined.lower()
