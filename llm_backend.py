@@ -320,11 +320,12 @@ class VLLMBackend:
 
 
 class LiteLLMProxyBackend:
-    """LLM backend that calls a LiteLLM proxy via its Ollama-compatible endpoint.
+    """LLM backend that calls a LiteLLM proxy via its OpenAI-compatible endpoint.
 
-    Uses the ollama_chat provider so requests go to /api/chat, which the
-    LiteLLM proxy exposes with full tool-calling support.
-    Embeddings use the OpenAI-compatible /v1/embeddings endpoint.
+    Uses openai/ollama_chat/{model} so that LiteLLM SDK calls the proxy's
+    /v1/chat/completions with model="ollama_chat/<name>". The proxy then routes
+    internally to Ollama's /api/chat, which supports tool calling.
+    Embeddings also use the OpenAI-compatible /v1/embeddings endpoint.
     """
 
     def __init__(self, cfg: LiteLLMProxyConfig) -> None:
@@ -336,7 +337,7 @@ class LiteLLMProxyBackend:
         self, model: str, messages: list[dict], tools: list[dict] | None
     ) -> ChatResponse:
         kwargs: dict = {
-            "model": f"ollama_chat/{model}",
+            "model": f"openai/ollama_chat/{model}",
             "api_base": self._api_base,
             "api_key": self._api_key,
             "messages": messages,
@@ -398,7 +399,7 @@ class LiteLLMProxyBackend:
             ChatResponse chunks with content and optionally thinking text.
         """
         kwargs: dict = {
-            "model": f"ollama_chat/{model}",
+            "model": f"openai/ollama_chat/{model}",
             "api_base": self._api_base,
             "api_key": self._api_key,
             "messages": messages,
