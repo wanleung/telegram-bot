@@ -62,10 +62,12 @@ async def test_ollama_backend_chat_plain_text():
     backend = OllamaBackend(_ollama_cfg())
     msg = MagicMock()
     msg.content = "Hello!"
-    msg.tool_calls = []
+    msg.tool_calls = None
+    choice = MagicMock()
+    choice.message = msg
     resp = MagicMock()
-    resp.message = msg
-    with patch.object(backend._client, "chat", new=AsyncMock(return_value=resp)):
+    resp.choices = [choice]
+    with patch("litellm.acompletion", new=AsyncMock(return_value=resp)):
         result = await backend.chat("llama3.2", [{"role": "user", "content": "hi"}], None)
     assert isinstance(result, ChatResponse)
     assert result.content == "Hello!"
@@ -76,15 +78,17 @@ async def test_ollama_backend_chat_plain_text():
 async def test_ollama_backend_chat_structured_tool_calls():
     backend = OllamaBackend(_ollama_cfg())
     tc = MagicMock()
+    tc.id = "call_1"
     tc.function.name = "search"
-    tc.function.arguments = {"query": "python"}
-    tc.model_dump.return_value = {"function": {"name": "search", "arguments": {"query": "python"}}}
+    tc.function.arguments = json.dumps({"query": "python"})
     msg = MagicMock()
     msg.content = ""
     msg.tool_calls = [tc]
+    choice = MagicMock()
+    choice.message = msg
     resp = MagicMock()
-    resp.message = msg
-    with patch.object(backend._client, "chat", new=AsyncMock(return_value=resp)):
+    resp.choices = [choice]
+    with patch("litellm.acompletion", new=AsyncMock(return_value=resp)):
         result = await backend.chat("llama3.2", [], [])
     assert len(result.tool_calls) == 1
     assert result.tool_calls[0].name == "search"
@@ -98,10 +102,12 @@ async def test_ollama_backend_chat_text_embedded_fallback():
     backend = OllamaBackend(_ollama_cfg())
     msg = MagicMock()
     msg.content = '<|python_start|>{"name": "get_status", "parameters": {}}<|python_end|>'
-    msg.tool_calls = []
+    msg.tool_calls = None
+    choice = MagicMock()
+    choice.message = msg
     resp = MagicMock()
-    resp.message = msg
-    with patch.object(backend._client, "chat", new=AsyncMock(return_value=resp)):
+    resp.choices = [choice]
+    with patch("litellm.acompletion", new=AsyncMock(return_value=resp)):
         result = await backend.chat("llama3.2", [], None)
     assert len(result.tool_calls) == 1
     assert result.tool_calls[0].name == "get_status"
@@ -111,20 +117,26 @@ async def test_ollama_backend_chat_text_embedded_fallback():
 @pytest.mark.asyncio
 async def test_ollama_backend_list_models():
     backend = OllamaBackend(_ollama_cfg())
-    m1, m2 = MagicMock(), MagicMock()
-    m1.model = "llava"
-    m2.model = "llama3.2"
-    resp = MagicMock()
-    resp.models = [m1, m2]
-    with patch.object(backend._client, "list", new=AsyncMock(return_value=resp)):
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = {
+        "models": [{"model": "llava:latest"}, {"model": "llama3.2:latest"}]
+    }
+    mock_http = AsyncMock()
+    mock_http.get = AsyncMock(return_value=mock_resp)
+    with patch("httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
         result = await backend.list_models()
-    assert result == ["llama3.2", "llava"]
+    assert result == ["llama3.2:latest", "llava:latest"]
 
 
 @pytest.mark.asyncio
 async def test_ollama_backend_list_models_error():
     backend = OllamaBackend(_ollama_cfg())
-    with patch.object(backend._client, "list", side_effect=Exception("conn refused")):
+    with patch("httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value.__aenter__ = AsyncMock(side_effect=Exception("conn refused"))
+        mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
         result = await backend.list_models()
     assert result == []
 
@@ -132,18 +144,27 @@ async def test_ollama_backend_list_models_error():
 @pytest.mark.asyncio
 async def test_ollama_backend_embed():
     backend = OllamaBackend(_ollama_cfg())
+    emb = MagicMock()
+    emb.embedding = [0.1, 0.2, 0.3]
     resp = MagicMock()
-    resp.embeddings = [[0.1, 0.2, 0.3]]
-    with patch.object(backend._client, "embed", new=AsyncMock(return_value=resp)):
+    resp.data = [emb]
+    with patch("litellm.aembedding", new=AsyncMock(return_value=resp)):
         result = await backend.embed("nomic-embed-text", "hello")
     assert result == [0.1, 0.2, 0.3]
 
 
 def test_ollama_format_tool_result():
     backend = OllamaBackend(_ollama_cfg())
-    tc = ToolCall(name="search", arguments={})
+    tc = ToolCall(name="search", arguments={}, id="call_abc")
     msg = backend.format_tool_result(tc, "result text")
-    assert msg == {"role": "tool", "content": "result text", "tool_name": "search"}
+    assert msg == {"role": "tool", "tool_call_id": "call_abc", "content": "result text"}
+
+
+def test_ollama_format_tool_result_no_id():
+    backend = OllamaBackend(_ollama_cfg())
+    tc = ToolCall(name="search", arguments={}, id=None)
+    msg = backend.format_tool_result(tc, "result text")
+    assert msg == {"role": "tool", "tool_call_id": "", "content": "result text"}
 
 
 # --- VLLMBackend ---
