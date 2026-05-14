@@ -23,6 +23,14 @@ class VLLMConfig(BaseModel):
     think: bool = False
 
 
+class LiteLLMProxyConfig(BaseModel):
+    base_url: str
+    api_key: str
+    default_model: str
+    timeout: int = 300
+    think: bool = False
+
+
 class HistoryConfig(BaseModel):
     max_messages: int = 50
     db_path: str = "data/history.db"
@@ -30,7 +38,7 @@ class HistoryConfig(BaseModel):
 
 class RagConfig(BaseModel):
     enabled: bool = False
-    embed_backend: Literal["ollama", "vllm"] | None = None
+    embed_backend: Literal["ollama", "vllm", "litellm_proxy"] | None = None
     embed_model: str = Field(default="nomic-embed-text", min_length=1)
     db_path: str = Field(default="data/chroma", min_length=1)
     top_k: int = Field(default=4, gt=0)
@@ -54,9 +62,10 @@ class MCPServerConfig(BaseModel):
 
 class Config(BaseModel):
     telegram: TelegramConfig
-    backend: Literal["ollama", "vllm"] = "ollama"
+    backend: Literal["ollama", "vllm", "litellm_proxy"] = "ollama"
     ollama: OllamaConfig | None = None
     vllm: VLLMConfig | None = None
+    litellm_proxy: LiteLLMProxyConfig | None = None
     history: HistoryConfig = HistoryConfig()
     rag: RagConfig = RagConfig()
     mcp_servers: dict[str, MCPServerConfig] = {}
@@ -67,16 +76,20 @@ class Config(BaseModel):
             raise ValueError("backend is 'ollama' but no ollama: block found in config")
         if self.backend == "vllm" and self.vllm is None:
             raise ValueError("backend is 'vllm' but no vllm: block found in config")
-        
+        if self.backend == "litellm_proxy" and self.litellm_proxy is None:
+            raise ValueError("backend is 'litellm_proxy' but no litellm_proxy: block found in config")
+
         # Set embed_backend to main backend if not specified
         if self.rag.embed_backend is None:
             self.rag.embed_backend = self.backend
-        
+
         # Validate embed_backend blocks when explicitly set
         if self.rag.embed_backend == "ollama" and self.ollama is None:
             raise ValueError("rag.embed_backend is 'ollama' but no ollama: block found in config")
         if self.rag.embed_backend == "vllm" and self.vllm is None:
             raise ValueError("rag.embed_backend is 'vllm' but no vllm: block found in config")
+        if self.rag.embed_backend == "litellm_proxy" and self.litellm_proxy is None:
+            raise ValueError("rag.embed_backend is 'litellm_proxy' but no litellm_proxy: block found in config")
         return self
 
 

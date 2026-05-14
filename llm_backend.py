@@ -10,7 +10,7 @@ from typing import Protocol, runtime_checkable
 import httpx
 import litellm
 
-from config import Config, OllamaConfig, VLLMConfig
+from config import Config, LiteLLMProxyConfig, OllamaConfig, VLLMConfig
 
 litellm.suppress_debug_info = True
 
@@ -319,10 +319,132 @@ class VLLMBackend:
         return {"role": "tool", "tool_call_id": tool_call.id or "", "content": result}
 
 
+class LiteLLMProxyBackend:
+    """LLM backend that calls a LiteLLM proxy (OpenAI-compatible endpoint)."""
+
+    def __init__(self, cfg: LiteLLMProxyConfig) -> None:
+        self._api_base = cfg.base_url
+        self._api_key = cfg.api_key
+        self._timeout = cfg.timeout
+
+    async def chat(
+        self, model: str, messages: list[dict], tools: list[dict] | None
+    ) -> ChatResponse:
+        kwargs: dict = {
+            "model": f"openai/{model}",
+            "api_base": self._api_base,
+            "api_key": self._api_key,
+            "messages": messages,
+            "timeout": self._timeout,
+        }
+        if tools:
+            kwargs["tools"] = tools
+        response = await litellm.acompletion(**kwargs)
+        msg = response.choices[0].message
+        content = msg.content or ""
+
+        if msg.tool_calls:
+            tool_calls = [
+                ToolCall(
+                    name=tc.function.name,
+                    arguments=json.loads(tc.function.arguments),
+                    id=tc.id,
+                )
+                for tc in msg.tool_calls
+            ]
+            raw_msg = {
+                "role": "assistant",
+                "content": content,
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments,
+                        },
+                    }
+                    for tc in msg.tool_calls
+                ],
+            }
+            return ChatResponse(content=content, tool_calls=tool_calls, raw_assistant_message=raw_msg)
+
+        raw_msg = {"role": "assistant", "content": content}
+        return ChatResponse(content=content, raw_assistant_message=raw_msg)
+
+    async def chat_stream(
+        self,
+        model: str,
+        messages: list[dict],
+        tools: list[dict] | None,
+        think: bool = False,
+    ) -> AsyncIterator[ChatResponse]:
+        """Stream chat responses from a LiteLLM proxy.
+
+        Args:
+            model: Model name as configured in the proxy.
+            messages: Chat messages.
+            tools: Forwarded to the completions endpoint when provided.
+            think: When True, passes extra_body={"enable_thinking": True}.
+
+        Yields:
+            ChatResponse chunks with content and optionally thinking text.
+        """
+        kwargs: dict = {
+            "model": f"openai/{model}",
+            "api_base": self._api_base,
+            "api_key": self._api_key,
+            "messages": messages,
+            "stream": True,
+            "timeout": self._timeout,
+        }
+        if tools:
+            kwargs["tools"] = tools
+        if think:
+            kwargs["extra_body"] = {"enable_thinking": True}
+        async for chunk in await litellm.acompletion(**kwargs):
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            content = delta.content or ""
+            thinking = getattr(delta, "reasoning_content", None) or None
+            if content or thinking:
+                yield ChatResponse(content=content, thinking=thinking)
+
+    async def list_models(self) -> list[str]:
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(
+                    f"{self._api_base}/v1/models",
+                    headers={"Authorization": f"Bearer {self._api_key}"},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                return sorted(m["id"] for m in data.get("data", []))
+        except Exception as exc:
+            logger.exception("Failed to list LiteLLM proxy models: %s", exc)
+            return []
+
+    async def embed(self, model: str, text: str) -> list[float]:
+        response = await litellm.aembedding(
+            model=f"openai/{model}",
+            api_base=self._api_base,
+            api_key=self._api_key,
+            input=text,
+            timeout=self._timeout,
+        )
+        return response.data[0].embedding
+
+    def format_tool_result(self, tool_call: ToolCall, result: str) -> dict:
+        return {"role": "tool", "tool_call_id": tool_call.id or "", "content": result}
+
+
 def create_backend(config: Config) -> LLMBackend:
     """Return the chat LLMBackend configured in config.backend."""
     if config.backend == "vllm":
         return VLLMBackend(config.vllm)
+    if config.backend == "litellm_proxy":
+        return LiteLLMProxyBackend(config.litellm_proxy)
     return OllamaBackend(config.ollama)
 
 
@@ -330,4 +452,6 @@ def create_embed_backend(config: Config) -> LLMBackend:
     """Return the embedding LLMBackend configured in config.rag.embed_backend."""
     if config.rag.embed_backend == "vllm":
         return VLLMBackend(config.vllm)
+    if config.rag.embed_backend == "litellm_proxy":
+        return LiteLLMProxyBackend(config.litellm_proxy)
     return OllamaBackend(config.ollama)

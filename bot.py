@@ -147,7 +147,7 @@ async def cmd_think(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     think_state: dict[int, bool] = context.bot_data.setdefault("think_state", {})
     chat_id = update.effective_chat.id
 
-    default_think = cfg.ollama.think if cfg.backend == "ollama" else cfg.vllm.think
+    default_think = cfg.ollama.think if cfg.backend == "ollama" else (cfg.vllm.think if cfg.backend == "vllm" else cfg.litellm_proxy.think)
     current = think_state.get(chat_id, default_think)
     think_state[chat_id] = not current
     status = "ON 🧠" if not current else "OFF"
@@ -201,7 +201,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     think_state: dict[int, bool] = context.bot_data.setdefault("think_state", {})
 
     chat_id = update.effective_chat.id
-    default_think = cfg.ollama.think if cfg.backend == "ollama" else cfg.vllm.think
+    default_think = cfg.ollama.think if cfg.backend == "ollama" else (cfg.vllm.think if cfg.backend == "vllm" else cfg.litellm_proxy.think)
     think = think_state.get(chat_id, default_think)
 
     images: list[str] | None = None
@@ -298,7 +298,11 @@ def main() -> None:
 
     mcp = MCPManager(cfg.mcp_servers)
     chat_backend = create_backend(cfg)
-    initial_model = cfg.vllm.default_model if cfg.backend == "vllm" else cfg.ollama.default_model
+    initial_model = (
+        cfg.vllm.default_model if cfg.backend == "vllm"
+        else cfg.litellm_proxy.default_model if cfg.backend == "litellm_proxy"
+        else cfg.ollama.default_model
+    )
     agent = Agent(chat_backend, initial_model, cfg, mcp)
 
     app = (
