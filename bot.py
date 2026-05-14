@@ -23,6 +23,7 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logging.getLogger("agent").setLevel(logging.DEBUG)
+logging.getLogger("llm_backend").setLevel(logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 

@@ -348,6 +348,7 @@ class LiteLLMProxyBackend:
         payload: dict = {"model": model, "messages": messages}
         if tools:
             payload["tools"] = tools
+            payload["tool_choice"] = "auto"
             logger.debug(
                 "Sending %d tool(s) to proxy: %s",
                 len(tools),
