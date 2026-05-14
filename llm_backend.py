@@ -9,7 +9,6 @@ from typing import Protocol, runtime_checkable
 
 import httpx
 import litellm
-import openai
 
 from config import Config, OllamaConfig, VLLMConfig
 
@@ -208,22 +207,24 @@ class OllamaBackend:
 
 
 class VLLMBackend:
-    """LLM backend backed by vLLM's OpenAI-compatible API."""
+    """LLM backend backed by vLLM via LiteLLM."""
 
     def __init__(self, cfg: VLLMConfig) -> None:
-        self._client = openai.AsyncOpenAI(
-            base_url=cfg.base_url,
-            api_key="none",
-            timeout=cfg.timeout,
-        )
+        self._api_base = cfg.base_url
+        self._timeout = cfg.timeout
 
     async def chat(
         self, model: str, messages: list[dict], tools: list[dict] | None
     ) -> ChatResponse:
-        kwargs: dict = {"model": model, "messages": messages}
+        kwargs: dict = {
+            "model": f"hosted_vllm/{model}",
+            "api_base": self._api_base,
+            "messages": messages,
+            "timeout": self._timeout,
+        }
         if tools:
             kwargs["tools"] = tools
-        response = await self._client.chat.completions.create(**kwargs)
+        response = await litellm.acompletion(**kwargs)
         msg = response.choices[0].message
         content = msg.content or ""
 
@@ -263,25 +264,19 @@ class VLLMBackend:
         tools: list[dict] | None,
         think: bool = False,
     ) -> AsyncIterator[ChatResponse]:
-        """Stream chat responses from vLLM with optional thinking support.
-
-        Args:
-            model: Model name to use.
-            messages: Chat messages.
-            tools: Forwarded to the completions endpoint when provided.
-            think: When True, passes extra_body={"enable_thinking": True}.
-
-        Yields:
-            ChatResponse chunks with content and optionally thinking text.
-        """
-        kwargs: dict = {"model": model, "messages": messages, "stream": True}
+        kwargs: dict = {
+            "model": f"hosted_vllm/{model}",
+            "api_base": self._api_base,
+            "messages": messages,
+            "stream": True,
+            "timeout": self._timeout,
+        }
         if tools:
             kwargs["tools"] = tools
         if think:
             kwargs["extra_body"] = {"enable_thinking": True}
-
-        async for chunk in await self._client.chat.completions.create(**kwargs):
-            if not chunk.choices:      # skip usage-only / keepalive chunks
+        async for chunk in await litellm.acompletion(**kwargs):
+            if not chunk.choices:
                 continue
             delta = chunk.choices[0].delta
             content = delta.content or ""
@@ -291,14 +286,22 @@ class VLLMBackend:
 
     async def list_models(self) -> list[str]:
         try:
-            response = await self._client.models.list()
-            return sorted(m.id for m in response.data)
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(f"{self._api_base}/v1/models")
+                resp.raise_for_status()
+                data = resp.json()
+                return sorted(m["id"] for m in data.get("data", []))
         except Exception as exc:
             logger.exception("Failed to list vLLM models: %s", exc)
             return []
 
     async def embed(self, model: str, text: str) -> list[float]:
-        response = await self._client.embeddings.create(model=model, input=text)
+        response = await litellm.aembedding(
+            model=f"hosted_vllm/{model}",
+            api_base=self._api_base,
+            input=text,
+            timeout=self._timeout,
+        )
         return response.data[0].embedding
 
     def format_tool_result(self, tool_call: ToolCall, result: str) -> dict:
