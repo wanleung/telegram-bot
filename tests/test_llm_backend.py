@@ -173,12 +173,14 @@ def test_ollama_format_tool_result_no_id():
 @pytest.mark.asyncio
 async def test_vllm_backend_chat_plain_text():
     backend = VLLMBackend(_vllm_cfg())
+    msg = MagicMock()
+    msg.content = "Hello from vLLM!"
+    msg.tool_calls = None
     choice = MagicMock()
-    choice.message.content = "Hello from vLLM!"
-    choice.message.tool_calls = None
+    choice.message = msg
     resp = MagicMock()
     resp.choices = [choice]
-    with patch.object(backend._client.chat.completions, "create", new=AsyncMock(return_value=resp)):
+    with patch("litellm.acompletion", new=AsyncMock(return_value=resp)):
         result = await backend.chat("llama3", [{"role": "user", "content": "hi"}], None)
     assert result.content == "Hello from vLLM!"
     assert result.tool_calls == []
@@ -191,12 +193,14 @@ async def test_vllm_backend_chat_tool_calls():
     tc.id = "call_abc"
     tc.function.name = "search"
     tc.function.arguments = json.dumps({"query": "python"})
+    msg = MagicMock()
+    msg.content = ""
+    msg.tool_calls = [tc]
     choice = MagicMock()
-    choice.message.content = ""
-    choice.message.tool_calls = [tc]
+    choice.message = msg
     resp = MagicMock()
     resp.choices = [choice]
-    with patch.object(backend._client.chat.completions, "create", new=AsyncMock(return_value=resp)):
+    with patch("litellm.acompletion", new=AsyncMock(return_value=resp)):
         result = await backend.chat("llama3", [], [])
     assert len(result.tool_calls) == 1
     assert result.tool_calls[0].name == "search"
@@ -207,12 +211,16 @@ async def test_vllm_backend_chat_tool_calls():
 @pytest.mark.asyncio
 async def test_vllm_backend_list_models():
     backend = VLLMBackend(_vllm_cfg())
-    m1, m2 = MagicMock(), MagicMock()
-    m1.id = "llama3"
-    m2.id = "mistral"
-    resp = MagicMock()
-    resp.data = [m2, m1]
-    with patch.object(backend._client.models, "list", new=AsyncMock(return_value=resp)):
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = {
+        "data": [{"id": "mistral"}, {"id": "llama3"}]
+    }
+    mock_http = AsyncMock()
+    mock_http.get = AsyncMock(return_value=mock_resp)
+    with patch("httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
         result = await backend.list_models()
     assert result == ["llama3", "mistral"]
 
@@ -220,7 +228,9 @@ async def test_vllm_backend_list_models():
 @pytest.mark.asyncio
 async def test_vllm_backend_list_models_error():
     backend = VLLMBackend(_vllm_cfg())
-    with patch.object(backend._client.models, "list", side_effect=Exception("conn refused")):
+    with patch("httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value.__aenter__ = AsyncMock(side_effect=Exception("conn refused"))
+        mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
         result = await backend.list_models()
     assert result == []
 
@@ -232,7 +242,7 @@ async def test_vllm_backend_embed():
     emb.embedding = [0.4, 0.5, 0.6]
     resp = MagicMock()
     resp.data = [emb]
-    with patch.object(backend._client.embeddings, "create", new=AsyncMock(return_value=resp)):
+    with patch("litellm.aembedding", new=AsyncMock(return_value=resp)):
         result = await backend.embed("e5-mistral", "hello")
     assert result == [0.4, 0.5, 0.6]
 
@@ -277,7 +287,7 @@ def test_vllm_backend_has_chat_stream():
 
 @pytest.mark.asyncio
 async def test_vllm_backend_chat_stream_content_chunks():
-    """chat_stream yields ChatResponse chunks with content from OpenAI delta."""
+    """chat_stream yields ChatResponse chunks with content from delta."""
     backend = VLLMBackend(_vllm_cfg())
 
     def _make_chunk(text):
@@ -290,7 +300,7 @@ async def test_vllm_backend_chat_stream_content_chunks():
         for text in ["Hello", " world"]:
             yield _make_chunk(text)
 
-    with patch.object(backend._client.chat.completions, "create", new=AsyncMock(return_value=_fake_stream())):
+    with patch("litellm.acompletion", new=AsyncMock(return_value=_fake_stream())):
         chunks = []
         async for cr in backend.chat_stream("llama3", [{"role": "user", "content": "hi"}], None):
             chunks.append(cr)
@@ -315,7 +325,7 @@ async def test_vllm_backend_chat_stream_thinking_chunks():
         yield _make_chunk(reasoning="thinking...")
         yield _make_chunk(text="Answer")
 
-    with patch.object(backend._client.chat.completions, "create", new=AsyncMock(return_value=_fake_stream())):
+    with patch("litellm.acompletion", new=AsyncMock(return_value=_fake_stream())):
         chunks = []
         async for cr in backend.chat_stream("llama3", [], None, think=True):
             chunks.append(cr)
@@ -326,7 +336,7 @@ async def test_vllm_backend_chat_stream_thinking_chunks():
 
 @pytest.mark.asyncio
 async def test_vllm_backend_chat_stream_passes_enable_thinking_in_extra_body():
-    """When think=True, extra_body with enable_thinking is passed to create()."""
+    """When think=True, extra_body with enable_thinking is passed to acompletion."""
     backend = VLLMBackend(_vllm_cfg())
     captured_kwargs = {}
 
@@ -337,11 +347,10 @@ async def test_vllm_backend_chat_stream_passes_enable_thinking_in_extra_body():
         chunk.choices[0].delta.reasoning_content = None
         yield chunk
 
-    async def mock_create(*args, **kwargs):
-        captured_kwargs.update(kwargs)
+    async def mock_acompletion(*args, **kwargs):
         return _fake_stream(*args, **kwargs)
 
-    with patch.object(backend._client.chat.completions, "create", new=AsyncMock(side_effect=mock_create)):
+    with patch("litellm.acompletion", side_effect=mock_acompletion):
         async for _ in backend.chat_stream("llama3", [], None, think=True):
             pass
 
@@ -355,24 +364,17 @@ async def test_ollama_backend_chat_stream_content_chunks():
     """chat_stream yields ChatResponse chunks with content."""
     backend = OllamaBackend(_ollama_cfg())
 
-    chunk1 = MagicMock()
-    chunk1.choices = [MagicMock()]
-    chunk1.choices[0].delta.content = "Hello"
-    chunk1.choices[0].delta.thinking = None
-
-    chunk2 = MagicMock()
-    chunk2.choices = [MagicMock()]
-    chunk2.choices[0].delta.content = " world"
-    chunk2.choices[0].delta.thinking = None
+    def _make_chunk(text):
+        chunk = MagicMock()
+        chunk.choices[0].delta.content = text
+        chunk.choices[0].delta.thinking = None
+        return chunk
 
     async def _fake_stream(*args, **kwargs):
-        for c in [chunk1, chunk2]:
-            yield c
+        for text in ["Hello", " world"]:
+            yield _make_chunk(text)
 
-    async def _fake_acompletion(*args, **kwargs):
-        return _fake_stream()
-
-    with patch("litellm.acompletion", side_effect=_fake_acompletion):
+    with patch("litellm.acompletion", new=AsyncMock(return_value=_fake_stream())):
         chunks = []
         async for cr in backend.chat_stream("llama3.2", [{"role": "user", "content": "hi"}], None):
             chunks.append(cr)
@@ -385,46 +387,37 @@ async def test_ollama_backend_chat_stream_content_chunks():
 
 @pytest.mark.asyncio
 async def test_ollama_backend_chat_stream_thinking_chunks():
-    """chat_stream yields thinking fragments when think=True and model returns thinking."""
+    """chat_stream yields thinking fragments when think=True."""
     backend = OllamaBackend(_ollama_cfg())
 
-    think_chunk = MagicMock()
-    think_chunk.choices = [MagicMock()]
-    think_chunk.choices[0].delta.content = ""
-    think_chunk.choices[0].delta.thinking = "I should reason..."
-
-    content_chunk = MagicMock()
-    content_chunk.choices = [MagicMock()]
-    content_chunk.choices[0].delta.content = "Final answer"
-    content_chunk.choices[0].delta.thinking = None
+    def _make_chunk(text=None, thinking=None):
+        chunk = MagicMock()
+        chunk.choices[0].delta.content = text or ""
+        chunk.choices[0].delta.thinking = thinking
+        return chunk
 
     async def _fake_stream(*args, **kwargs):
-        for c in [think_chunk, content_chunk]:
-            yield c
+        yield _make_chunk(thinking="I should reason...")
+        yield _make_chunk(text="Final answer")
 
-    async def _fake_acompletion(*args, **kwargs):
-        return _fake_stream()
-
-    with patch("litellm.acompletion", side_effect=_fake_acompletion):
+    with patch("litellm.acompletion", new=AsyncMock(return_value=_fake_stream())):
         chunks = []
         async for cr in backend.chat_stream("llama3.2", [], None, think=True):
             chunks.append(cr)
 
-    thinking_chunks = [c for c in chunks if c.thinking]
-    content_chunks = [c for c in chunks if c.content]
-    assert any(c.thinking == "I should reason..." for c in thinking_chunks)
-    assert any(c.content == "Final answer" for c in content_chunks)
+    assert any(c.thinking == "I should reason..." for c in chunks)
+    assert any(c.content == "Final answer" for c in chunks)
 
 
 @pytest.mark.asyncio
 async def test_ollama_backend_chat_stream_passes_think_flag():
-    """chat_stream passes think=True to the underlying client when requested."""
+    """chat_stream passes think=True kwarg to acompletion when requested."""
     backend = OllamaBackend(_ollama_cfg())
+    captured_kwargs = {}
 
     async def _fake_stream(*args, **kwargs):
-        assert kwargs.get("think") is True
+        captured_kwargs.update(kwargs)
         chunk = MagicMock()
-        chunk.choices = [MagicMock()]
         chunk.choices[0].delta.content = "ok"
         chunk.choices[0].delta.thinking = None
         yield chunk
@@ -436,10 +429,12 @@ async def test_ollama_backend_chat_stream_passes_think_flag():
         async for _ in backend.chat_stream("llama3.2", [], None, think=True):
             pass
 
+    assert captured_kwargs.get("think") is True
+
 
 @pytest.mark.asyncio
 async def test_vllm_backend_chat_stream_skips_empty_choices_chunk():
-    """Chunks with choices=[] (e.g. usage-only final chunk) must not raise IndexError."""
+    """Chunks with choices=[] must not raise IndexError."""
     backend = VLLMBackend(_vllm_cfg())
 
     def _make_chunk(text=None, empty=False):
@@ -452,9 +447,9 @@ async def test_vllm_backend_chat_stream_skips_empty_choices_chunk():
 
     async def _fake_stream(*args, **kwargs):
         yield _make_chunk(text="Hello")
-        yield _make_chunk(empty=True)   # usage-only chunk — must not crash
+        yield _make_chunk(empty=True)
 
-    with patch.object(backend._client.chat.completions, "create", new=AsyncMock(return_value=_fake_stream())):
+    with patch("litellm.acompletion", new=AsyncMock(return_value=_fake_stream())):
         chunks = [cr async for cr in backend.chat_stream("llama3", [], None)]
 
     assert len(chunks) == 1
@@ -463,7 +458,7 @@ async def test_vllm_backend_chat_stream_skips_empty_choices_chunk():
 
 @pytest.mark.asyncio
 async def test_vllm_backend_chat_stream_no_extra_body_when_think_false():
-    """When think=False (default), extra_body must not be included."""
+    """When think=False, extra_body must not be included."""
     backend = VLLMBackend(_vllm_cfg())
     captured_kwargs = {}
 
@@ -474,7 +469,7 @@ async def test_vllm_backend_chat_stream_no_extra_body_when_think_false():
         chunk.choices[0].delta.reasoning_content = None
         yield chunk
 
-    with patch.object(backend._client.chat.completions, "create", new=AsyncMock(return_value=_fake_stream())):
+    with patch("litellm.acompletion", new=AsyncMock(return_value=_fake_stream())):
         async for _ in backend.chat_stream("llama3", [], None, think=False):
             pass
 
@@ -483,22 +478,18 @@ async def test_vllm_backend_chat_stream_no_extra_body_when_think_false():
 
 @pytest.mark.asyncio
 async def test_ollama_backend_chat_stream_no_think_kwarg_when_false():
-    """When think=False (default), think kwarg must not be sent to client."""
+    """When think=False, think kwarg must not be sent."""
     backend = OllamaBackend(_ollama_cfg())
     captured_kwargs = {}
 
     async def _fake_stream(*args, **kwargs):
         captured_kwargs.update(kwargs)
         chunk = MagicMock()
-        chunk.choices = [MagicMock()]
         chunk.choices[0].delta.content = "ok"
         chunk.choices[0].delta.thinking = None
         yield chunk
 
-    async def _fake_acompletion(*args, **kwargs):
-        return _fake_stream(*args, **kwargs)
-
-    with patch("litellm.acompletion", side_effect=_fake_acompletion):
+    with patch("litellm.acompletion", new=AsyncMock(return_value=_fake_stream())):
         async for _ in backend.chat_stream("llama3.2", [], None, think=False):
             pass
 
