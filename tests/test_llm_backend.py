@@ -520,3 +520,357 @@ def test_create_embed_backend_vllm():
     cfg = _make_config(backend="vllm", embed_backend="vllm")
     backend = create_embed_backend(cfg)
     assert isinstance(backend, VLLMBackend)
+
+
+# ── LiteLLMProxyBackend ──────────────────────────────────────────────────────
+
+import httpx
+from config import LiteLLMProxyConfig
+from llm_backend import LiteLLMProxyBackend
+
+
+def _proxy_cfg(**kwargs):
+    defaults = dict(
+        base_url="http://proxy:4000",
+        api_key="test-key",
+        default_model="thinker",
+        timeout=30,
+        think=False,
+    )
+    defaults.update(kwargs)
+    return LiteLLMProxyConfig(**defaults)
+
+
+def _proxy_response(content="", tool_calls=None, reasoning=None, finish_reason="stop",
+                    prompt_tokens=100, completion_tokens=20):
+    msg = {"role": "assistant", "content": content}
+    if tool_calls:
+        msg["tool_calls"] = tool_calls
+    if reasoning:
+        msg["reasoning"] = reasoning
+    return {
+        "id": "chatcmpl-test",
+        "object": "chat.completion",
+        "created": 1234567890,
+        "model": "thinker",
+        "choices": [{"index": 0, "finish_reason": finish_reason, "message": msg}],
+        "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
+                  "total_tokens": prompt_tokens + completion_tokens},
+    }
+
+
+# --- chat(): tool calling ---
+
+@pytest.mark.asyncio
+async def test_litellm_proxy_chat_calls_tool():
+    """chat() returns ToolCall when proxy responds with tool_calls."""
+    backend = LiteLLMProxyBackend(_proxy_cfg())
+    tool_resp = _proxy_response(
+        tool_calls=[{
+            "id": "call_abc",
+            "type": "function",
+            "function": {"name": "get_tfl_underground_status", "arguments": "{}"},
+        }],
+        finish_reason="tool_calls",
+    )
+    tools = [{"type": "function", "function": {
+        "name": "get_tfl_underground_status",
+        "description": "Get TFL status",
+        "parameters": {"type": "object", "properties": {}},
+    }}]
+
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = tool_resp
+    mock_resp.raise_for_status = MagicMock()
+
+    with patch("httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        mock_client_cls.return_value = mock_client
+
+        response = await backend.chat(
+            model="thinker",
+            messages=[{"role": "user", "content": "tube status"}],
+            tools=tools,
+        )
+
+    assert response.tool_calls is not None
+    assert len(response.tool_calls) == 1
+    assert response.tool_calls[0].name == "get_tfl_underground_status"
+    assert response.tool_calls[0].arguments == {}
+    assert response.tool_calls[0].id == "call_abc"
+
+
+@pytest.mark.asyncio
+async def test_litellm_proxy_chat_tool_choice_auto_sent():
+    """chat() includes tool_choice=auto in payload when tools provided."""
+    backend = LiteLLMProxyBackend(_proxy_cfg())
+    tool_resp = _proxy_response(content="hello")
+
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = tool_resp
+    mock_resp.raise_for_status = MagicMock()
+
+    tools = [{"type": "function", "function": {
+        "name": "my_tool", "description": "desc",
+        "parameters": {"type": "object", "properties": {}},
+    }}]
+
+    with patch("httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        mock_client_cls.return_value = mock_client
+
+        await backend.chat(model="thinker",
+                           messages=[{"role": "user", "content": "hi"}],
+                           tools=tools)
+
+        _, kwargs = mock_client.post.call_args
+        payload = kwargs["json"]
+
+    assert payload.get("tool_choice") == "auto"
+    assert "tools" in payload
+
+
+@pytest.mark.asyncio
+async def test_litellm_proxy_chat_no_think_injected_when_tools():
+    """/no_think appended to last user message when tools are present."""
+    backend = LiteLLMProxyBackend(_proxy_cfg())
+    tool_resp = _proxy_response(content="ok")
+
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = tool_resp
+    mock_resp.raise_for_status = MagicMock()
+
+    tools = [{"type": "function", "function": {
+        "name": "t", "description": "d",
+        "parameters": {"type": "object", "properties": {}},
+    }}]
+
+    with patch("httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        mock_client_cls.return_value = mock_client
+
+        await backend.chat(model="thinker",
+                           messages=[{"role": "user", "content": "tube status"}],
+                           tools=tools)
+
+        _, kwargs = mock_client.post.call_args
+        msgs = kwargs["json"]["messages"]
+
+    last_user = next(m for m in reversed(msgs) if m["role"] == "user")
+    assert "/no_think" in last_user["content"]
+
+
+@pytest.mark.asyncio
+async def test_litellm_proxy_chat_system_prompt_injected_when_tools():
+    """System prompt listing tool names injected when tools present."""
+    backend = LiteLLMProxyBackend(_proxy_cfg())
+    tool_resp = _proxy_response(content="ok")
+
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = tool_resp
+    mock_resp.raise_for_status = MagicMock()
+
+    tools = [{"type": "function", "function": {
+        "name": "get_tfl_underground_status", "description": "d",
+        "parameters": {"type": "object", "properties": {}},
+    }}]
+
+    with patch("httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        mock_client_cls.return_value = mock_client
+
+        await backend.chat(model="thinker",
+                           messages=[{"role": "user", "content": "hi"}],
+                           tools=tools)
+
+        _, kwargs = mock_client.post.call_args
+        msgs = kwargs["json"]["messages"]
+
+    assert msgs[0]["role"] == "system"
+    assert "get_tfl_underground_status" in msgs[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_litellm_proxy_chat_no_tool_calls_returns_content():
+    """chat() returns plain content when proxy returns no tool_calls."""
+    backend = LiteLLMProxyBackend(_proxy_cfg())
+    tool_resp = _proxy_response(content="Hello there!")
+
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = tool_resp
+    mock_resp.raise_for_status = MagicMock()
+
+    with patch("httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        mock_client_cls.return_value = mock_client
+
+        response = await backend.chat(
+            model="thinker",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=None,
+        )
+
+    assert response.content == "Hello there!"
+    assert not response.tool_calls
+
+
+# --- chat(): thinking mode ---
+
+@pytest.mark.asyncio
+async def test_litellm_proxy_chat_stream_think_injects_think_suffix():
+    """chat_stream() appends /think to last user message when think=True."""
+    backend = LiteLLMProxyBackend(_proxy_cfg())
+
+    sse_lines = [
+        b'data: {"choices":[{"delta":{"content":"Paris"},"index":0}]}\n',
+        b'data: [DONE]\n',
+    ]
+
+    mock_stream_resp = AsyncMock()
+    mock_stream_resp.raise_for_status = MagicMock()
+
+    async def _aiter_lines():
+        for line in sse_lines:
+            yield line.decode().rstrip("\n")
+
+    mock_stream_resp.aiter_lines = _aiter_lines
+    mock_stream_resp.__aenter__ = AsyncMock(return_value=mock_stream_resp)
+    mock_stream_resp.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.stream = MagicMock(return_value=mock_stream_resp)
+        mock_client_cls.return_value = mock_client
+
+        chunks = []
+        async for chunk in backend.chat_stream(
+            model="thinker",
+            messages=[{"role": "user", "content": "capital of France"}],
+            tools=None,
+            think=True,
+        ):
+            chunks.append(chunk)
+
+        _, kwargs = mock_client.stream.call_args
+        msgs = kwargs["json"]["messages"]
+
+    last_user = next(m for m in reversed(msgs) if m["role"] == "user")
+    assert "/think" in last_user["content"]
+    assert any(c.content == "Paris" for c in chunks)
+
+
+@pytest.mark.asyncio
+async def test_litellm_proxy_chat_stream_thinking_chunks_yielded():
+    """chat_stream() yields thinking content from reasoning/thinking delta fields."""
+    backend = LiteLLMProxyBackend(_proxy_cfg())
+
+    sse_lines = [
+        b'data: {"choices":[{"delta":{"reasoning":"step 1"},"index":0}]}\n',
+        b'data: {"choices":[{"delta":{"content":"Answer"},"index":0}]}\n',
+        b'data: [DONE]\n',
+    ]
+
+    mock_stream_resp = AsyncMock()
+    mock_stream_resp.raise_for_status = MagicMock()
+
+    async def _aiter_lines():
+        for line in sse_lines:
+            yield line.decode().rstrip("\n")
+
+    mock_stream_resp.aiter_lines = _aiter_lines
+    mock_stream_resp.__aenter__ = AsyncMock(return_value=mock_stream_resp)
+    mock_stream_resp.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.stream = MagicMock(return_value=mock_stream_resp)
+        mock_client_cls.return_value = mock_client
+
+        chunks = []
+        async for chunk in backend.chat_stream(
+            model="thinker",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=None,
+            think=False,
+        ):
+            chunks.append(chunk)
+
+    thinking_chunks = [c for c in chunks if c.thinking]
+    content_chunks = [c for c in chunks if c.content]
+    assert any("step 1" in (c.thinking or "") for c in thinking_chunks)
+    assert any(c.content == "Answer" for c in content_chunks)
+
+
+@pytest.mark.asyncio
+async def test_litellm_proxy_chat_stream_no_think_not_injected_by_default():
+    """chat_stream() does NOT inject /think when think=False."""
+    backend = LiteLLMProxyBackend(_proxy_cfg())
+
+    sse_lines = [b'data: [DONE]\n']
+    mock_stream_resp = AsyncMock()
+    mock_stream_resp.raise_for_status = MagicMock()
+
+    async def _aiter_lines():
+        for line in sse_lines:
+            yield line.decode().rstrip("\n")
+
+    mock_stream_resp.aiter_lines = _aiter_lines
+    mock_stream_resp.__aenter__ = AsyncMock(return_value=mock_stream_resp)
+    mock_stream_resp.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.stream = MagicMock(return_value=mock_stream_resp)
+        mock_client_cls.return_value = mock_client
+
+        async for _ in backend.chat_stream(
+            model="thinker",
+            messages=[{"role": "user", "content": "hello"}],
+            tools=None,
+            think=False,
+        ):
+            pass
+
+        _, kwargs = mock_client.stream.call_args
+        msgs = kwargs["json"]["messages"]
+
+    last_user = next(m for m in reversed(msgs) if m["role"] == "user")
+    assert "/think" not in last_user["content"]
+
+
+# --- create_backend for litellm_proxy ---
+
+def test_create_backend_litellm_proxy():
+    from config import TelegramConfig, HistoryConfig
+    cfg = Config(
+        telegram=TelegramConfig(token="tok"),
+        backend="litellm_proxy",
+        litellm_proxy=LiteLLMProxyConfig(
+            base_url="http://proxy:4000",
+            api_key="key",
+            default_model="thinker",
+        ),
+    )
+    backend = create_backend(cfg)
+    assert isinstance(backend, LiteLLMProxyBackend)

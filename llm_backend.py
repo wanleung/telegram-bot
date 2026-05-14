@@ -381,6 +381,7 @@ class LiteLLMProxyBackend:
                 len(tools),
                 [t["function"]["name"] for t in tools],
             )
+            logger.debug("Full request payload: %s", json.dumps(payload)[:3000])
 
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             resp = await client.post(
@@ -391,7 +392,7 @@ class LiteLLMProxyBackend:
             resp.raise_for_status()
             data = resp.json()
 
-        logger.debug("Proxy response: %s", json.dumps(data)[:1000])
+        logger.debug("Proxy response (full): %s", json.dumps(data))
 
         msg = data["choices"][0]["message"]
         content = msg.get("content") or ""
@@ -466,7 +467,12 @@ class LiteLLMProxyBackend:
                         chunk = json.loads(raw)
                         delta = chunk["choices"][0]["delta"]
                         content = delta.get("content") or ""
-                        thinking = delta.get("thinking") or delta.get("reasoning_content") or None
+                        thinking = (
+                            delta.get("thinking")
+                            or delta.get("reasoning_content")
+                            or delta.get("reasoning")
+                            or None
+                        )
                         if content or thinking:
                             yield ChatResponse(content=content, thinking=thinking)
                     except (json.JSONDecodeError, KeyError, IndexError):
