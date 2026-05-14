@@ -337,7 +337,7 @@ class LiteLLMProxyBackend:
         self, model: str, messages: list[dict], tools: list[dict] | None
     ) -> ChatResponse:
         kwargs: dict = {
-            "model": f"openai/ollama_chat/{model}",
+            "model": f"openai/{model}",
             "api_base": self._api_base,
             "api_key": self._api_key,
             "messages": messages,
@@ -399,7 +399,7 @@ class LiteLLMProxyBackend:
             ChatResponse chunks with content and optionally thinking text.
         """
         kwargs: dict = {
-            "model": f"openai/ollama_chat/{model}",
+            "model": f"openai/{model}",
             "api_base": self._api_base,
             "api_key": self._api_key,
             "messages": messages,
