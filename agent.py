@@ -182,6 +182,11 @@ class Agent:
         # Has tools: non-streaming loop for tool detection, stream final response
         for _ in range(MAX_ITERATIONS):
             try:
+                logger.debug(
+                    "Calling chat with %d tool(s): %s",
+                    len(tools),
+                    [t["function"]["name"] for t in tools],
+                )
                 response: ChatResponse = await self._backend.chat(
                     model=self._active_model,
                     messages=messages,
@@ -193,11 +198,14 @@ class Agent:
                 return
 
             if response.tool_calls:
+                logger.debug("Model called tools: %s", [tc.name for tc in response.tool_calls])
                 messages.append(response.raw_assistant_message)
                 for tc in response.tool_calls:
                     result = await self._mcp.call_tool(tc.name, tc.arguments)
+                    logger.debug("Tool %r result: %.200s", tc.name, result)
                     messages.append(self._backend.format_tool_result(tc, result))
             else:
+                logger.debug("Model returned no tool calls, streaming final response")
                 async for item in _stream_final(messages):
                     yield item
                 return

@@ -22,6 +22,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     level=logging.INFO,
 )
+logging.getLogger("agent").setLevel(logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 
