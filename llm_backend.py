@@ -264,6 +264,17 @@ class VLLMBackend:
         tools: list[dict] | None,
         think: bool = False,
     ) -> AsyncIterator[ChatResponse]:
+        """Stream chat responses from vLLM with optional thinking support.
+
+        Args:
+            model: Model name to use.
+            messages: Chat messages.
+            tools: Forwarded to the completions endpoint when provided.
+            think: When True, passes extra_body={"enable_thinking": True}.
+
+        Yields:
+            ChatResponse chunks with content and optionally thinking text.
+        """
         kwargs: dict = {
             "model": f"hosted_vllm/{model}",
             "api_base": self._api_base,
