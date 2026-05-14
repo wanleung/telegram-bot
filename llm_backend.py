@@ -345,7 +345,34 @@ class LiteLLMProxyBackend:
     async def chat(
         self, model: str, messages: list[dict], tools: list[dict] | None
     ) -> ChatResponse:
-        payload: dict = {"model": model, "messages": messages}
+        msgs = list(messages)
+        if tools:
+            # Qwen3 thinking mode suppresses tool calling — disable it for tool turns.
+            # Find the last user message and append /no_think if not already present.
+            for i in range(len(msgs) - 1, -1, -1):
+                if msgs[i].get("role") == "user":
+                    content = msgs[i].get("content") or ""
+                    if "/no_think" not in content and "/think" not in content:
+                        msgs[i] = {**msgs[i], "content": f"{content} /no_think".strip()}
+                    break
+
+            # Ensure a system prompt exists to guide tool use.
+            tool_names = ", ".join(t["function"]["name"] for t in tools)
+            system_prompt = (
+                f"You have access to tools: {tool_names}. "
+                "When the user's request requires real-time or external data, "
+                "call the appropriate tool instead of guessing."
+            )
+            if not msgs or msgs[0].get("role") != "system":
+                msgs = [{"role": "system", "content": system_prompt}] + msgs
+            elif "/no_think" not in msgs[0].get("content", ""):
+                # Prepend tool guidance to existing system message
+                msgs[0] = {
+                    **msgs[0],
+                    "content": f"{system_prompt}\n\n{msgs[0]['content']}",
+                }
+
+        payload: dict = {"model": model, "messages": msgs}
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
