@@ -174,9 +174,18 @@ If you enable `parse_mode=MarkdownV2` in `bot.py`, use Telegram-compatible synta
 
 Note: tables and `###` headings are not supported in Telegram Markdown.
 
+## LLM Backend
+
+The bot routes all LLM calls through **[LiteLLM](https://github.com/BerriAI/litellm)**, a unified async interface supporting 100+ LLM providers. Two local backends are configured via `config.yaml`:
+
+- **`ollama`** (default) — local Ollama instance; model string sent as `ollama/<model>`
+- **`vllm`** — local vLLM OpenAI-compatible server; model string sent as `hosted_vllm/<model>`
+
+Config keys (`ollama:` and `vllm:`) are unchanged. LiteLLM transparently handles provider-specific request formatting, streaming, and error handling across both backends.
+
 ## RAG (Retrieval-Augmented Generation)
 
-Always-on retrieval: every user message triggers a search of the local ChromaDB knowledge base. Relevant chunks are injected as context into the Ollama prompt. Ideal for grounding responses in RFCs, documentation, or any local knowledge base.
+Always-on retrieval: every user message triggers a search of the local ChromaDB knowledge base. Relevant chunks are injected as context into the LLM prompt. Ideal for grounding responses in RFCs, documentation, or any local knowledge base.
 
 ### Prerequisites
 
