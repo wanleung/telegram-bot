@@ -320,7 +320,12 @@ class VLLMBackend:
 
 
 class LiteLLMProxyBackend:
-    """LLM backend that calls a LiteLLM proxy (OpenAI-compatible endpoint)."""
+    """LLM backend that calls a LiteLLM proxy via its Ollama-compatible endpoint.
+
+    Uses the ollama_chat provider so requests go to /api/chat, which the
+    LiteLLM proxy exposes with full tool-calling support.
+    Embeddings use the OpenAI-compatible /v1/embeddings endpoint.
+    """
 
     def __init__(self, cfg: LiteLLMProxyConfig) -> None:
         self._api_base = cfg.base_url
@@ -331,7 +336,7 @@ class LiteLLMProxyBackend:
         self, model: str, messages: list[dict], tools: list[dict] | None
     ) -> ChatResponse:
         kwargs: dict = {
-            "model": f"openai/{model}",
+            "model": f"ollama_chat/{model}",
             "api_base": self._api_base,
             "api_key": self._api_key,
             "messages": messages,
@@ -347,7 +352,7 @@ class LiteLLMProxyBackend:
             tool_calls = [
                 ToolCall(
                     name=tc.function.name,
-                    arguments=json.loads(tc.function.arguments),
+                    arguments=json.loads(tc.function.arguments) if isinstance(tc.function.arguments, str) else tc.function.arguments,
                     id=tc.id,
                 )
                 for tc in msg.tool_calls
@@ -361,7 +366,9 @@ class LiteLLMProxyBackend:
                         "type": "function",
                         "function": {
                             "name": tc.function.name,
-                            "arguments": tc.function.arguments,
+                            "arguments": tc.function.arguments
+                            if isinstance(tc.function.arguments, str)
+                            else json.dumps(tc.function.arguments),
                         },
                     }
                     for tc in msg.tool_calls
@@ -379,19 +386,19 @@ class LiteLLMProxyBackend:
         tools: list[dict] | None,
         think: bool = False,
     ) -> AsyncIterator[ChatResponse]:
-        """Stream chat responses from a LiteLLM proxy.
+        """Stream chat responses from a LiteLLM proxy via /api/chat.
 
         Args:
             model: Model name as configured in the proxy.
             messages: Chat messages.
             tools: Forwarded to the completions endpoint when provided.
-            think: When True, passes extra_body={"enable_thinking": True}.
+            think: When True, passes think=True kwarg to the Ollama endpoint.
 
         Yields:
             ChatResponse chunks with content and optionally thinking text.
         """
         kwargs: dict = {
-            "model": f"openai/{model}",
+            "model": f"ollama_chat/{model}",
             "api_base": self._api_base,
             "api_key": self._api_key,
             "messages": messages,
@@ -401,13 +408,13 @@ class LiteLLMProxyBackend:
         if tools:
             kwargs["tools"] = tools
         if think:
-            kwargs["extra_body"] = {"enable_thinking": True}
+            kwargs["think"] = True
         async for chunk in await litellm.acompletion(**kwargs):
             if not chunk.choices:
                 continue
             delta = chunk.choices[0].delta
             content = delta.content or ""
-            thinking = getattr(delta, "reasoning_content", None) or None
+            thinking = getattr(delta, "thinking", None) or None
             if content or thinking:
                 yield ChatResponse(content=content, thinking=thinking)
 
