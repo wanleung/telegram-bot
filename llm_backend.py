@@ -1,4 +1,4 @@
-"""LLM backend abstraction: Ollama and vLLM (OpenAI-compat) implementations."""
+"""LLM backend abstraction: Ollama and vLLM via LiteLLM."""
 
 import json
 import logging
@@ -8,10 +8,12 @@ from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
 import httpx
-import ollama
+import litellm
 import openai
 
 from config import Config, OllamaConfig, VLLMConfig
+
+litellm.suppress_debug_info = True
 
 logger = logging.getLogger(__name__)
 
@@ -84,28 +86,50 @@ class LLMBackend(Protocol):
 
 
 class OllamaBackend:
-    """LLM backend backed by the Ollama native API."""
+    """LLM backend backed by Ollama via LiteLLM."""
 
     def __init__(self, cfg: OllamaConfig) -> None:
-        timeout = httpx.Timeout(connect=10.0, read=cfg.timeout, write=cfg.timeout, pool=10.0)
-        self._client = ollama.AsyncClient(host=cfg.base_url, timeout=timeout)
+        self._api_base = cfg.base_url
+        self._timeout = cfg.timeout
 
     async def chat(
         self, model: str, messages: list[dict], tools: list[dict] | None
     ) -> ChatResponse:
-        response = await self._client.chat(model=model, messages=messages, tools=tools)
-        msg = response.message
+        kwargs: dict = {
+            "model": f"ollama/{model}",
+            "api_base": self._api_base,
+            "messages": messages,
+            "timeout": self._timeout,
+        }
+        if tools:
+            kwargs["tools"] = tools
+        response = await litellm.acompletion(**kwargs)
+        msg = response.choices[0].message
         content = msg.content or ""
 
         if msg.tool_calls:
             tool_calls = [
-                ToolCall(name=tc.function.name, arguments=dict(tc.function.arguments))
+                ToolCall(
+                    name=tc.function.name,
+                    arguments=json.loads(tc.function.arguments),
+                    id=tc.id,
+                )
                 for tc in msg.tool_calls
             ]
             raw_msg = {
                 "role": "assistant",
                 "content": content,
-                "tool_calls": [tc.model_dump() for tc in msg.tool_calls],
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments,
+                        },
+                    }
+                    for tc in msg.tool_calls
+                ],
             }
             return ChatResponse(content=content, tool_calls=tool_calls, raw_assistant_message=raw_msg)
 
@@ -131,39 +155,56 @@ class OllamaBackend:
         think: bool = False,
     ) -> AsyncIterator[ChatResponse]:
         """Stream chat responses from Ollama with optional thinking support.
-        
+
         Args:
             model: Model name to use.
             messages: Chat messages.
             tools: Ignored for streaming calls; tool detection is handled in agent.py.
             think: Whether to enable thinking mode for models that support it.
-            
+
         Yields:
             ChatResponse chunks with content and optionally thinking text.
         """
-        kwargs = dict(model=model, messages=messages, stream=True)
+        kwargs: dict = {
+            "model": f"ollama/{model}",
+            "api_base": self._api_base,
+            "messages": messages,
+            "stream": True,
+            "timeout": self._timeout,
+        }
         if think:
             kwargs["think"] = True
-        async for chunk in await self._client.chat(**kwargs):
-            content = chunk.message.content or ""
-            thinking = getattr(chunk.message, "thinking", None) or None
+        async for chunk in await litellm.acompletion(**kwargs):
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            content = delta.content or ""
+            thinking = getattr(delta, "thinking", None) or None
             if content or thinking:
                 yield ChatResponse(content=content, thinking=thinking)
 
     async def list_models(self) -> list[str]:
         try:
-            response = await self._client.list()
-            return sorted(m.model for m in response.models)
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(f"{self._api_base}/api/tags")
+                resp.raise_for_status()
+                data = resp.json()
+                return sorted(m["model"] for m in data.get("models", []))
         except Exception as exc:
             logger.exception("Failed to list Ollama models: %s", exc)
             return []
 
     async def embed(self, model: str, text: str) -> list[float]:
-        response = await self._client.embed(model=model, input=text)
-        return response.embeddings[0]
+        response = await litellm.aembedding(
+            model=f"ollama/{model}",
+            api_base=self._api_base,
+            input=text,
+            timeout=self._timeout,
+        )
+        return response.data[0].embedding
 
     def format_tool_result(self, tool_call: ToolCall, result: str) -> dict:
-        return {"role": "tool", "content": result, "tool_name": tool_call.name}
+        return {"role": "tool", "tool_call_id": tool_call.id or "", "content": result}
 
 
 class VLLMBackend:

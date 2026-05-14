@@ -356,18 +356,23 @@ async def test_ollama_backend_chat_stream_content_chunks():
     backend = OllamaBackend(_ollama_cfg())
 
     chunk1 = MagicMock()
-    chunk1.message.content = "Hello"
-    chunk1.message.thinking = None
+    chunk1.choices = [MagicMock()]
+    chunk1.choices[0].delta.content = "Hello"
+    chunk1.choices[0].delta.thinking = None
 
     chunk2 = MagicMock()
-    chunk2.message.content = " world"
-    chunk2.message.thinking = None
+    chunk2.choices = [MagicMock()]
+    chunk2.choices[0].delta.content = " world"
+    chunk2.choices[0].delta.thinking = None
 
     async def _fake_stream(*args, **kwargs):
         for c in [chunk1, chunk2]:
             yield c
 
-    with patch.object(backend._client, "chat", return_value=_fake_stream()):
+    async def _fake_acompletion(*args, **kwargs):
+        return _fake_stream()
+
+    with patch("litellm.acompletion", side_effect=_fake_acompletion):
         chunks = []
         async for cr in backend.chat_stream("llama3.2", [{"role": "user", "content": "hi"}], None):
             chunks.append(cr)
@@ -384,18 +389,23 @@ async def test_ollama_backend_chat_stream_thinking_chunks():
     backend = OllamaBackend(_ollama_cfg())
 
     think_chunk = MagicMock()
-    think_chunk.message.content = ""
-    think_chunk.message.thinking = "I should reason..."
+    think_chunk.choices = [MagicMock()]
+    think_chunk.choices[0].delta.content = ""
+    think_chunk.choices[0].delta.thinking = "I should reason..."
 
     content_chunk = MagicMock()
-    content_chunk.message.content = "Final answer"
-    content_chunk.message.thinking = None
+    content_chunk.choices = [MagicMock()]
+    content_chunk.choices[0].delta.content = "Final answer"
+    content_chunk.choices[0].delta.thinking = None
 
     async def _fake_stream(*args, **kwargs):
         for c in [think_chunk, content_chunk]:
             yield c
 
-    with patch.object(backend._client, "chat", return_value=_fake_stream()):
+    async def _fake_acompletion(*args, **kwargs):
+        return _fake_stream()
+
+    with patch("litellm.acompletion", side_effect=_fake_acompletion):
         chunks = []
         async for cr in backend.chat_stream("llama3.2", [], None, think=True):
             chunks.append(cr)
@@ -414,11 +424,15 @@ async def test_ollama_backend_chat_stream_passes_think_flag():
     async def _fake_stream(*args, **kwargs):
         assert kwargs.get("think") is True
         chunk = MagicMock()
-        chunk.message.content = "ok"
-        chunk.message.thinking = None
+        chunk.choices = [MagicMock()]
+        chunk.choices[0].delta.content = "ok"
+        chunk.choices[0].delta.thinking = None
         yield chunk
 
-    with patch.object(backend._client, "chat", side_effect=_fake_stream):
+    async def _fake_acompletion(*args, **kwargs):
+        return _fake_stream(*args, **kwargs)
+
+    with patch("litellm.acompletion", side_effect=_fake_acompletion):
         async for _ in backend.chat_stream("llama3.2", [], None, think=True):
             pass
 
@@ -476,11 +490,15 @@ async def test_ollama_backend_chat_stream_no_think_kwarg_when_false():
     async def _fake_stream(*args, **kwargs):
         captured_kwargs.update(kwargs)
         chunk = MagicMock()
-        chunk.message.content = "ok"
-        chunk.message.thinking = None
+        chunk.choices = [MagicMock()]
+        chunk.choices[0].delta.content = "ok"
+        chunk.choices[0].delta.thinking = None
         yield chunk
 
-    with patch.object(backend._client, "chat", side_effect=_fake_stream):
+    async def _fake_acompletion(*args, **kwargs):
+        return _fake_stream(*args, **kwargs)
+
+    with patch("litellm.acompletion", side_effect=_fake_acompletion):
         async for _ in backend.chat_stream("llama3.2", [], None, think=False):
             pass
 
