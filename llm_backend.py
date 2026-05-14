@@ -324,65 +324,68 @@ class VLLMBackend:
 
 
 class LiteLLMProxyBackend:
-    """LLM backend that calls a LiteLLM proxy via its OpenAI-compatible endpoint.
+    """LLM backend that calls a LiteLLM proxy directly via httpx.
 
-    Uses openai/ollama_chat/{model} so that LiteLLM SDK calls the proxy's
-    /v1/chat/completions with model="ollama_chat/<name>". The proxy then routes
-    internally to Ollama's /api/chat, which supports tool calling.
-    Embeddings also use the OpenAI-compatible /v1/embeddings endpoint.
+    Bypasses LiteLLM SDK routing to call the proxy's /v1/chat/completions
+    and /v1/embeddings endpoints directly with full debug visibility.
     """
 
     def __init__(self, cfg: LiteLLMProxyConfig) -> None:
-        self._api_base = cfg.base_url
+        self._api_base = cfg.base_url.rstrip("/")
         self._api_key = cfg.api_key
         self._timeout = cfg.timeout
+
+    @property
+    def _headers(self) -> dict:
+        return {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
 
     async def chat(
         self, model: str, messages: list[dict], tools: list[dict] | None
     ) -> ChatResponse:
-        kwargs: dict = {
-            "model": f"openai/{model}",
-            "api_base": self._api_base,
-            "api_key": self._api_key,
-            "messages": messages,
-            "timeout": self._timeout,
-        }
+        payload: dict = {"model": model, "messages": messages}
         if tools:
-            kwargs["tools"] = tools
-        response = await litellm.acompletion(**kwargs)
-        msg = response.choices[0].message
-        content = msg.content or ""
+            payload["tools"] = tools
+            logger.debug(
+                "Sending %d tool(s) to proxy: %s",
+                len(tools),
+                [t["function"]["name"] for t in tools],
+            )
 
-        if msg.tool_calls:
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.post(
+                f"{self._api_base}/v1/chat/completions",
+                json=payload,
+                headers=self._headers,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        logger.debug("Proxy response: %s", json.dumps(data)[:1000])
+
+        msg = data["choices"][0]["message"]
+        content = msg.get("content") or ""
+        tool_calls_raw = msg.get("tool_calls")
+
+        if tool_calls_raw:
             tool_calls = [
                 ToolCall(
-                    name=tc.function.name,
-                    arguments=json.loads(tc.function.arguments) if isinstance(tc.function.arguments, str) else tc.function.arguments,
-                    id=tc.id,
+                    name=tc["function"]["name"],
+                    arguments=json.loads(tc["function"]["arguments"])
+                    if isinstance(tc["function"]["arguments"], str)
+                    else tc["function"]["arguments"],
+                    id=tc.get("id"),
                 )
-                for tc in msg.tool_calls
+                for tc in tool_calls_raw
             ]
-            raw_msg = {
-                "role": "assistant",
-                "content": content,
-                "tool_calls": [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments
-                            if isinstance(tc.function.arguments, str)
-                            else json.dumps(tc.function.arguments),
-                        },
-                    }
-                    for tc in msg.tool_calls
-                ],
-            }
-            return ChatResponse(content=content, tool_calls=tool_calls, raw_assistant_message=raw_msg)
+            logger.debug("Model called tools: %s", [tc.name for tc in tool_calls])
+            return ChatResponse(
+                content=content, tool_calls=tool_calls, raw_assistant_message=msg
+            )
 
-        raw_msg = {"role": "assistant", "content": content}
-        return ChatResponse(content=content, raw_assistant_message=raw_msg)
+        return ChatResponse(content=content, raw_assistant_message=msg)
 
     async def chat_stream(
         self,
@@ -391,44 +394,62 @@ class LiteLLMProxyBackend:
         tools: list[dict] | None,
         think: bool = False,
     ) -> AsyncIterator[ChatResponse]:
-        """Stream chat responses from a LiteLLM proxy via /api/chat.
+        """Stream chat responses from a LiteLLM proxy.
 
         Args:
             model: Model name as configured in the proxy.
             messages: Chat messages.
             tools: Forwarded to the completions endpoint when provided.
-            think: When True, passes think=True kwarg to the Ollama endpoint.
+            think: When True, injects /think into the last user message for
+                   Qwen3-style thinking mode.
 
         Yields:
             ChatResponse chunks with content and optionally thinking text.
         """
-        kwargs: dict = {
-            "model": f"openai/{model}",
-            "api_base": self._api_base,
-            "api_key": self._api_key,
-            "messages": messages,
-            "stream": True,
-            "timeout": self._timeout,
-        }
-        if tools:
-            kwargs["tools"] = tools
+        msgs = list(messages)
         if think:
-            kwargs["think"] = True
-        async for chunk in await litellm.acompletion(**kwargs):
-            if not chunk.choices:
-                continue
-            delta = chunk.choices[0].delta
-            content = delta.content or ""
-            thinking = getattr(delta, "thinking", None) or None
-            if content or thinking:
-                yield ChatResponse(content=content, thinking=thinking)
+            # Qwen3 activates thinking via /think appended to the user message
+            for i in range(len(msgs) - 1, -1, -1):
+                if msgs[i].get("role") == "user":
+                    user_content = msgs[i].get("content", "")
+                    if isinstance(user_content, str) and "/think" not in user_content:
+                        msgs[i] = {**msgs[i], "content": user_content + " /think"}
+                    break
+
+        payload: dict = {"model": model, "messages": msgs, "stream": True}
+        if tools:
+            payload["tools"] = tools
+
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            async with client.stream(
+                "POST",
+                f"{self._api_base}/v1/chat/completions",
+                json=payload,
+                headers=self._headers,
+            ) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    raw = line[6:]
+                    if raw.strip() == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(raw)
+                        delta = chunk["choices"][0]["delta"]
+                        content = delta.get("content") or ""
+                        thinking = delta.get("thinking") or delta.get("reasoning_content") or None
+                        if content or thinking:
+                            yield ChatResponse(content=content, thinking=thinking)
+                    except (json.JSONDecodeError, KeyError, IndexError):
+                        continue
 
     async def list_models(self) -> list[str]:
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.get(
                     f"{self._api_base}/v1/models",
-                    headers={"Authorization": f"Bearer {self._api_key}"},
+                    headers=self._headers,
                 )
                 resp.raise_for_status()
                 data = resp.json()
