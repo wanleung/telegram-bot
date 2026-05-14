@@ -95,7 +95,7 @@ class OllamaBackend:
         self, model: str, messages: list[dict], tools: list[dict] | None
     ) -> ChatResponse:
         kwargs: dict = {
-            "model": f"ollama/{model}",
+            "model": f"ollama_chat/{model}",
             "api_base": self._api_base,
             "messages": messages,
             "timeout": self._timeout,
@@ -110,7 +110,7 @@ class OllamaBackend:
             tool_calls = [
                 ToolCall(
                     name=tc.function.name,
-                    arguments=json.loads(tc.function.arguments),
+                    arguments=json.loads(tc.function.arguments) if isinstance(tc.function.arguments, str) else tc.function.arguments,
                     id=tc.id,
                 )
                 for tc in msg.tool_calls
@@ -124,7 +124,9 @@ class OllamaBackend:
                         "type": "function",
                         "function": {
                             "name": tc.function.name,
-                            "arguments": tc.function.arguments,
+                            "arguments": tc.function.arguments
+                            if isinstance(tc.function.arguments, str)
+                            else json.dumps(tc.function.arguments),
                         },
                     }
                     for tc in msg.tool_calls
@@ -155,6 +157,8 @@ class OllamaBackend:
     ) -> AsyncIterator[ChatResponse]:
         """Stream chat responses from Ollama with optional thinking support.
 
+        Uses /api/chat (ollama_chat provider) for full tool-calling compatibility.
+
         Args:
             model: Model name to use.
             messages: Chat messages.
@@ -165,7 +169,7 @@ class OllamaBackend:
             ChatResponse chunks with content and optionally thinking text.
         """
         kwargs: dict = {
-            "model": f"ollama/{model}",
+            "model": f"ollama_chat/{model}",
             "api_base": self._api_base,
             "messages": messages,
             "stream": True,
