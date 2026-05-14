@@ -381,7 +381,6 @@ class LiteLLMProxyBackend:
                 len(tools),
                 [t["function"]["name"] for t in tools],
             )
-            logger.debug("Full request payload: %s", json.dumps(payload)[:3000])
 
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             resp = await client.post(
@@ -392,7 +391,8 @@ class LiteLLMProxyBackend:
             resp.raise_for_status()
             data = resp.json()
 
-        logger.debug("Proxy response (full): %s", json.dumps(data))
+        finish_reason = data["choices"][0].get("finish_reason")
+        logger.debug("Proxy response: finish_reason=%s", finish_reason)
 
         msg = data["choices"][0]["message"]
         content = msg.get("content") or ""
