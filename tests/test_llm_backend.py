@@ -93,6 +93,7 @@ async def test_ollama_backend_chat_structured_tool_calls():
     assert len(result.tool_calls) == 1
     assert result.tool_calls[0].name == "search"
     assert result.tool_calls[0].arguments == {"query": "python"}
+    assert result.tool_calls[0].id == "call_1"
     assert result.raw_assistant_message["role"] == "assistant"
     assert "tool_calls" in result.raw_assistant_message
 
