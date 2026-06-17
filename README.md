@@ -84,7 +84,7 @@ mcp_servers:
   filesystem:
     type: stdio
     command: ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/home/user"]
-    enabled: true
+    enabled: false
 
   # SSE-based MCP server
   web_search:
@@ -97,6 +97,12 @@ mcp_servers:
     type: http
     url: "http://localhost:9000/mcp"
     enabled: false
+
+  # ComfyUI MCP server running in its own container
+  comfyui:
+    type: http
+    url: "http://localhost:18002/mcp"
+    enabled: true
 ```
 
 Environment variables are interpolated using `${VAR_NAME}` syntax anywhere in the config.

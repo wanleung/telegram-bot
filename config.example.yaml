@@ -31,7 +31,7 @@ mcp_servers:
   filesystem:
     type: stdio
     command: ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/home/user"]
-    enabled: true
+    enabled: false
 
   web_search:
     type: sse
@@ -42,3 +42,8 @@ mcp_servers:
     type: http
     url: "http://localhost:9000/mcp"
     enabled: false
+
+  comfyui:
+    type: http
+    url: "http://localhost:18002/mcp"
+    enabled: true

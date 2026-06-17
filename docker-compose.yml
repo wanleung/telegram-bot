@@ -12,5 +12,17 @@ services:
     # On Mac/Windows, set ollama.base_url to http://host.docker.internal:11434
     network_mode: host
 
+  comfyui:
+    build:
+      context: ../comfyUI
+    restart: unless-stopped
+    command: ["python3", "scripts/mcp_server.py"]
+    environment:
+      - MCP_TRANSPORT=streamable-http
+      - MCP_HOST=0.0.0.0
+      - MCP_PORT=8000
+    ports:
+      - "18002:8000"
+
 volumes:
   bot-data:
