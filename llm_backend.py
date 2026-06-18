@@ -1,5 +1,6 @@
 """LLM backend abstraction: Ollama and vLLM via LiteLLM."""
 
+import asyncio
 import json
 import logging
 import re
@@ -389,14 +390,21 @@ class LiteLLMProxyBackend:
                 [t.get("function", {}).get("name") for t in tools],
             )
 
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            resp = await client.post(
-                f"{self._api_base}/v1/chat/completions",
-                json=payload,
-                headers=self._headers,
-            )
+        for attempt in range(4):
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
+                resp = await client.post(
+                    f"{self._api_base}/v1/chat/completions",
+                    json=payload,
+                    headers=self._headers,
+                )
+            if resp.status_code == 429 and attempt < 3:
+                retry_after = min(int(resp.headers.get("retry-after", "5")), 60)
+                logger.warning("Rate limited (attempt %d/3), retrying in %ds", attempt + 1, retry_after)
+                await asyncio.sleep(retry_after)
+                continue
             resp.raise_for_status()
             data = resp.json()
+            break
 
         choices = data.get("choices")
         if not choices:
@@ -453,34 +461,41 @@ class LiteLLMProxyBackend:
         if tools:
             payload["tools"] = tools
 
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            async with client.stream(
-                "POST",
-                f"{self._api_base}/v1/chat/completions",
-                json=payload,
-                headers=self._headers,
-            ) as resp:
-                resp.raise_for_status()
-                async for line in resp.aiter_lines():
-                    if not line.startswith("data: "):
+        for attempt in range(4):
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
+                async with client.stream(
+                    "POST",
+                    f"{self._api_base}/v1/chat/completions",
+                    json=payload,
+                    headers=self._headers,
+                ) as resp:
+                    if resp.status_code == 429 and attempt < 3:
+                        retry_after = min(int(resp.headers.get("retry-after", "5")), 60)
+                        logger.warning("Rate limited (attempt %d/3), retrying in %ds", attempt + 1, retry_after)
+                        await asyncio.sleep(retry_after)
                         continue
-                    raw = line[6:]
-                    if raw.strip() == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(raw)
-                        delta = chunk["choices"][0]["delta"]
-                        content = delta.get("content") or ""
-                        thinking = (
-                            delta.get("thinking")
-                            or delta.get("reasoning_content")
-                            or delta.get("reasoning")
-                            or None
-                        )
-                        if content or thinking:
-                            yield ChatResponse(content=content, thinking=thinking)
-                    except (json.JSONDecodeError, KeyError, IndexError):
-                        continue
+                    resp.raise_for_status()
+                    async for line in resp.aiter_lines():
+                        if not line.startswith("data: "):
+                            continue
+                        raw = line[6:]
+                        if raw.strip() == "[DONE]":
+                            return
+                        try:
+                            chunk = json.loads(raw)
+                            delta = chunk["choices"][0]["delta"]
+                            content = delta.get("content") or ""
+                            thinking = (
+                                delta.get("thinking")
+                                or delta.get("reasoning_content")
+                                or delta.get("reasoning")
+                                or None
+                            )
+                            if content or thinking:
+                                yield ChatResponse(content=content, thinking=thinking)
+                        except (json.JSONDecodeError, KeyError, IndexError):
+                            continue
+                    return  # stream completed successfully
 
     async def list_models(self) -> list[str]:
         try:
