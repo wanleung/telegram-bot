@@ -514,7 +514,10 @@ class MimoBackend(LiteLLMProxyBackend):
     """LLM backend for the Mimo cloud API (OpenAI-compatible)."""
 
     def __init__(self, cfg: MimoConfig) -> None:
-        self._api_base = cfg.base_url.rstrip("/")
+        base = cfg.base_url.rstrip("/")
+        if base.endswith("/v1"):
+            base = base[:-3]
+        self._api_base = base
         self._api_key = cfg.api_key
         self._timeout = cfg.timeout
 
