@@ -10,7 +10,7 @@ from typing import Protocol, runtime_checkable
 import httpx
 import litellm
 
-from config import Config, LiteLLMProxyConfig, OllamaConfig, VLLMConfig
+from config import Config, LiteLLMProxyConfig, MimoConfig, OllamaConfig, VLLMConfig
 
 litellm.suppress_debug_info = True
 
@@ -46,6 +46,18 @@ def _parse_text_tool_calls(content: str) -> list[dict] | None:
         if name:
             calls.append({"name": name, "arguments": arguments})
     return calls or None
+
+
+def _inject_last_user_suffix(
+    msgs: list[dict], suffix: str, guard: tuple[str, ...] = ()
+) -> None:
+    """Append suffix to the last user message unless any guard string is already present."""
+    for i in range(len(msgs) - 1, -1, -1):
+        if msgs[i].get("role") == "user":
+            content = msgs[i].get("content") or ""
+            if isinstance(content, str) and not any(s in content for s in guard):
+                msgs[i] = {**msgs[i], "content": f"{content} {suffix}".strip()}
+            break
 
 
 @dataclass
@@ -346,18 +358,14 @@ class LiteLLMProxyBackend:
         self, model: str, messages: list[dict], tools: list[dict] | None
     ) -> ChatResponse:
         msgs = list(messages)
-        if tools:
+        if tools and "qwen" in model.lower():
             # Qwen3 thinking mode suppresses tool calling — disable it for tool turns.
-            # Find the last user message and append /no_think if not already present.
-            for i in range(len(msgs) - 1, -1, -1):
-                if msgs[i].get("role") == "user":
-                    content = msgs[i].get("content") or ""
-                    if "/no_think" not in content and "/think" not in content:
-                        msgs[i] = {**msgs[i], "content": f"{content} /no_think".strip()}
-                    break
+            _inject_last_user_suffix(msgs, "/no_think", guard=("/no_think", "/think"))
 
-            # Ensure a system prompt exists to guide tool use.
-            tool_names = ", ".join(t["function"]["name"] for t in tools)
+            # Qwen3 benefits from explicit tool guidance in the system prompt.
+            tool_names = ", ".join(
+                t["function"]["name"] for t in tools if t.get("function", {}).get("name")
+            )
             system_prompt = (
                 f"You have access to tools: {tool_names}. "
                 "When the user's request requires real-time or external data, "
@@ -365,8 +373,7 @@ class LiteLLMProxyBackend:
             )
             if not msgs or msgs[0].get("role") != "system":
                 msgs = [{"role": "system", "content": system_prompt}] + msgs
-            elif "/no_think" not in msgs[0].get("content", ""):
-                # Prepend tool guidance to existing system message
+            else:
                 msgs[0] = {
                     **msgs[0],
                     "content": f"{system_prompt}\n\n{msgs[0]['content']}",
@@ -379,7 +386,7 @@ class LiteLLMProxyBackend:
             logger.debug(
                 "Sending %d tool(s) to proxy: %s",
                 len(tools),
-                [t["function"]["name"] for t in tools],
+                [t.get("function", {}).get("name") for t in tools],
             )
 
         async with httpx.AsyncClient(timeout=self._timeout) as client:
@@ -391,10 +398,13 @@ class LiteLLMProxyBackend:
             resp.raise_for_status()
             data = resp.json()
 
-        finish_reason = data["choices"][0].get("finish_reason")
+        choices = data.get("choices")
+        if not choices:
+            raise ValueError(f"Proxy returned no choices: {json.dumps(data)[:200]}")
+        finish_reason = choices[0].get("finish_reason")
         logger.debug("Proxy response: finish_reason=%s", finish_reason)
 
-        msg = data["choices"][0]["message"]
+        msg = choices[0]["message"]
         content = msg.get("content") or ""
         tool_calls_raw = msg.get("tool_calls")
 
@@ -437,13 +447,7 @@ class LiteLLMProxyBackend:
         """
         msgs = list(messages)
         if think:
-            # Qwen3 activates thinking via /think appended to the user message
-            for i in range(len(msgs) - 1, -1, -1):
-                if msgs[i].get("role") == "user":
-                    user_content = msgs[i].get("content", "")
-                    if isinstance(user_content, str) and "/think" not in user_content:
-                        msgs[i] = {**msgs[i], "content": user_content + " /think"}
-                    break
+            _inject_last_user_suffix(msgs, "/think", guard=("/think",))
 
         payload: dict = {"model": model, "messages": msgs, "stream": True}
         if tools:
@@ -506,12 +510,23 @@ class LiteLLMProxyBackend:
         return {"role": "tool", "tool_call_id": tool_call.id or "", "content": result}
 
 
+class MimoBackend(LiteLLMProxyBackend):
+    """LLM backend for the Mimo cloud API (OpenAI-compatible)."""
+
+    def __init__(self, cfg: MimoConfig) -> None:
+        self._api_base = cfg.base_url.rstrip("/")
+        self._api_key = cfg.api_key
+        self._timeout = cfg.timeout
+
+
 def create_backend(config: Config) -> LLMBackend:
     """Return the chat LLMBackend configured in config.backend."""
     if config.backend == "vllm":
         return VLLMBackend(config.vllm)
     if config.backend == "litellm_proxy":
         return LiteLLMProxyBackend(config.litellm_proxy)
+    if config.backend == "mimo":
+        return MimoBackend(config.mimo)
     return OllamaBackend(config.ollama)
 
 
@@ -521,4 +536,6 @@ def create_embed_backend(config: Config) -> LLMBackend:
         return VLLMBackend(config.vllm)
     if config.rag.embed_backend == "litellm_proxy":
         return LiteLLMProxyBackend(config.litellm_proxy)
+    if config.rag.embed_backend == "mimo":
+        return MimoBackend(config.mimo)
     return OllamaBackend(config.ollama)

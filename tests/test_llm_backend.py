@@ -638,7 +638,7 @@ async def test_litellm_proxy_chat_tool_choice_auto_sent():
 
 @pytest.mark.asyncio
 async def test_litellm_proxy_chat_no_think_injected_when_tools():
-    """/no_think appended to last user message when tools are present."""
+    """/no_think appended to last user message for Qwen3 models when tools are present."""
     backend = LiteLLMProxyBackend(_proxy_cfg())
     tool_resp = _proxy_response(content="ok")
 
@@ -658,7 +658,7 @@ async def test_litellm_proxy_chat_no_think_injected_when_tools():
         mock_client.post = AsyncMock(return_value=mock_resp)
         mock_client_cls.return_value = mock_client
 
-        await backend.chat(model="thinker",
+        await backend.chat(model="qwen3:235b",
                            messages=[{"role": "user", "content": "tube status"}],
                            tools=tools)
 
@@ -670,8 +670,41 @@ async def test_litellm_proxy_chat_no_think_injected_when_tools():
 
 
 @pytest.mark.asyncio
+async def test_litellm_proxy_chat_no_think_not_injected_for_non_qwen():
+    """/no_think is NOT injected for non-Qwen3 models."""
+    backend = LiteLLMProxyBackend(_proxy_cfg())
+    tool_resp = _proxy_response(content="ok")
+
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = tool_resp
+    mock_resp.raise_for_status = MagicMock()
+
+    tools = [{"type": "function", "function": {
+        "name": "t", "description": "d",
+        "parameters": {"type": "object", "properties": {}},
+    }}]
+
+    with patch("httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        mock_client_cls.return_value = mock_client
+
+        await backend.chat(model="gpt-4o",
+                           messages=[{"role": "user", "content": "tube status"}],
+                           tools=tools)
+
+        _, kwargs = mock_client.post.call_args
+        msgs = kwargs["json"]["messages"]
+
+    last_user = next(m for m in reversed(msgs) if m["role"] == "user")
+    assert "/no_think" not in last_user["content"]
+
+
+@pytest.mark.asyncio
 async def test_litellm_proxy_chat_system_prompt_injected_when_tools():
-    """System prompt listing tool names injected when tools present."""
+    """System prompt listing tool names injected for Qwen3 models when tools present."""
     backend = LiteLLMProxyBackend(_proxy_cfg())
     tool_resp = _proxy_response(content="ok")
 
@@ -691,7 +724,7 @@ async def test_litellm_proxy_chat_system_prompt_injected_when_tools():
         mock_client.post = AsyncMock(return_value=mock_resp)
         mock_client_cls.return_value = mock_client
 
-        await backend.chat(model="thinker",
+        await backend.chat(model="qwen3:235b",
                            messages=[{"role": "user", "content": "hi"}],
                            tools=tools)
 
@@ -727,6 +760,31 @@ async def test_litellm_proxy_chat_no_tool_calls_returns_content():
 
     assert response.content == "Hello there!"
     assert not response.tool_calls
+
+
+@pytest.mark.asyncio
+async def test_litellm_proxy_chat_raises_on_empty_choices():
+    """chat() raises ValueError when proxy returns 200 with an empty choices list."""
+    backend = LiteLLMProxyBackend(_proxy_cfg())
+    empty_resp = {"id": "x", "object": "chat.completion", "choices": [], "usage": {}}
+
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = empty_resp
+    mock_resp.raise_for_status = MagicMock()
+
+    with patch("httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        mock_client_cls.return_value = mock_client
+
+        with pytest.raises(ValueError, match="no choices"):
+            await backend.chat(
+                model="thinker",
+                messages=[{"role": "user", "content": "hi"}],
+                tools=None,
+            )
 
 
 # --- chat(): thinking mode ---
