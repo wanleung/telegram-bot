@@ -1,5 +1,6 @@
 import logging
 from contextlib import AsyncExitStack
+from datetime import timedelta
 
 from mcp import ClientSession
 from mcp.client.stdio import stdio_client, StdioServerParameters
@@ -68,14 +69,17 @@ class MCPManager:
         Raises:
             ValueError: If the server type is not recognized.
         """
+        timeout = timedelta(seconds=cfg.tool_timeout)
         if cfg.type == "stdio":
             params = StdioServerParameters(command=cfg.command[0], args=cfg.command[1:])
             read, write = await self._exit_stack.enter_async_context(stdio_client(params))
         elif cfg.type == "sse":
-            read, write = await self._exit_stack.enter_async_context(sse_client(cfg.url))
+            read, write = await self._exit_stack.enter_async_context(
+                sse_client(cfg.url, sse_read_timeout=timeout)
+            )
         elif cfg.type == "http":
             read, write, _ = await self._exit_stack.enter_async_context(
-                streamablehttp_client(cfg.url)
+                streamablehttp_client(cfg.url, timeout=timeout, sse_read_timeout=timeout)
             )
         else:
             raise ValueError(f"Unknown MCP server type '{cfg.type}' for server '{name}'")

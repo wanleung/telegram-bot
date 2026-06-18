@@ -58,6 +58,7 @@ class MCPServerConfig(BaseModel):
     command: list[str] | None = None
     url: str | None = None
     enabled: bool = True
+    tool_timeout: int = 300  # seconds; increase for long-running tools (e.g. image generation)
 
     @model_validator(mode="after")
     def check_fields_for_type(self) -> "MCPServerConfig":
