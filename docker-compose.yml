@@ -24,6 +24,8 @@ services:
       - MCP_PORT=8000
     ports:
       - "18002:8000"
+    volumes:
+      - ../comfyUI/lora:/workspace/lora:ro
 
 volumes:
   bot-data:
