@@ -27,5 +27,13 @@ services:
     volumes:
       - ../comfyUI/lora:/workspace/lora:ro
 
+  playwright-mcp:
+    image: mcr.microsoft.com/playwright:v1.52.0-noble
+    restart: unless-stopped
+    command: >
+      bash -c "npx --yes @playwright/mcp@latest --headless --port 8937 --host 0.0.0.0"
+    ports:
+      - "8937:8937"
+
 volumes:
   bot-data:

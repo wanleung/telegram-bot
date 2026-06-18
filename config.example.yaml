@@ -55,3 +55,9 @@ mcp_servers:
     type: http
     url: "http://localhost:18002/mcp"
     enabled: true
+
+  # Playwright MCP — headless Chromium for browsing JavaScript-rendered pages
+  playwright:
+    type: http
+    url: "http://localhost:8937/"
+    enabled: true
