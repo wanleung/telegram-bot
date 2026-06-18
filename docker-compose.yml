@@ -22,6 +22,7 @@ services:
       - MCP_TRANSPORT=streamable-http
       - MCP_HOST=0.0.0.0
       - MCP_PORT=8000
+      - MIMO_API_KEY=${MIMO_API_KEY}
     ports:
       - "18002:8000"
     volumes:
