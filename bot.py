@@ -303,6 +303,7 @@ def main() -> None:
     initial_model = (
         cfg.vllm.default_model if cfg.backend == "vllm"
         else cfg.litellm_proxy.default_model if cfg.backend == "litellm_proxy"
+        else cfg.mimo.default_model if cfg.backend == "mimo"
         else cfg.ollama.default_model
     )
     agent = Agent(chat_backend, initial_model, cfg, mcp)
